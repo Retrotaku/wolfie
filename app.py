@@ -46,13 +46,13 @@ SPECIAL_ROLES = MAIN_SPECIAL_ROLES
 WOLF_VARIANTS = MAIN_WOLF_VARIANTS
 ROLE_CARDS = {
     "voyante": ("Voyante", "Voyante.jpeg", "Ton regard perce les secrets de la nuit."),
-    "sorciere": ("Sorcière", "Sorciere.jpeg", "Les secrets de la Sorcière restent à découvrir."),
-    "cupidon": ("Cupidon", "Cupidon.jpeg", "Le destin de Cupidon reste à découvrir."),
-    "chasseur": ("Chasseur", "Chasseur.jpeg", "Le secret du Chasseur reste à découvrir."),
-    "loup_garou": ("Loup-Garou", "Loup_Garou.jpeg", "Tu fais partie de la meute."),
-    "loup_enrage": ("Loup Enragé", "Loup_Enrage.jpeg", "Une fois dans la partie, tu peux infecter la victime choisie par la meute. Elle devient Loup-Garou et perd son rôle spécial."),
-    "loup_blanc": ("Loup Blanc", "Loup_Blanc.jpeg", "Tu votes avec la meute chaque nuit. À partir de la nuit 2, une nuit sur deux, tu peux dévorer seul un joueur, même protégé. Tu dois finir seul, sauf si tu es amoureux."),
-    "villageois": ("Villageois", "Villageois.jpeg", "Tu es un Villageois. Le village compte sur toi."),
+    "sorciere": ("Sorcière", "Sorciere.jpeg", "Tu possèdes une potion de vie et une potion de mort, chacune utilisable une fois. Tu connais la victime de la meute, peux te sauver et utiliser les deux potions la même nuit."),
+    "cupidon": ("Cupidon", "Cupidon.jpeg", "La première nuit, lie deux joueurs. Si l’un meurt, l’autre meurt aussi. Si les amoureux sont de camps différents, ils gagnent ensemble s’ils sont les deux derniers survivants."),
+    "chasseur": ("Chasseur", "Chasseur.jpeg", "À ta mort, quelle qu’en soit la cause, tu peux éliminer un joueur vivant."),
+    "loup_garou": ("Loup-Garou", "Loup_Garou.jpeg", "Chaque nuit, vote avec la meute pour éliminer un joueur. La meute gagne quand seuls des Loups-Garous et des Loups Enragés restent en vie."),
+    "loup_enrage": ("Loup Enragé", "Loup_Enrage.jpeg", "Tu votes avec la meute chaque nuit. Une seule fois dans la partie, tu peux convertir un joueur vivant en Loup-Garou ordinaire. Il perd son ancien rôle et ses pouvoirs."),
+    "loup_blanc": ("Loup Blanc", "Loup_Blanc.jpeg", "Tu es indépendant. À partir de la nuit 2, une nuit sur deux, tu peux éliminer un joueur de ton choix. Tu gagnes seul, ou avec ton amoureux si vous êtes les deux derniers survivants."),
+    "villageois": ("Villageois", "Villageois.jpeg", "Aucun pouvoir spécial. Le village gagne quand aucun Loup-Garou, Loup Enragé ou Loup Blanc ne reste en vie."),
     "assassin": ("Assassin", "Assassin.jpeg", "Rôle premium : élimine un adversaire selon la stratégie de ta partie."),
     "aveugle": ("Aveugle", "Aveugle.jpeg", "Rôle premium : tu marches dans l’ombre et tu ne vois pas les dangers autour de toi."),
     "bouffon": ("Bouffon", "Bouffon.jpeg", "Rôle premium : tu perturbes le village avec une présence déroutante."),
@@ -199,9 +199,379 @@ def create_room(mode: str, names: list[str]) -> dict[str, Any]:
             "composition": default_composition(len(players)),
             "composition_customized": False,
             "started": False,
+            "game": None,
         }
         rooms[code] = room
     return room
+
+
+PACK_ROLES = {"loup_garou", "loup_enrage"}
+WOLF_ROLES = PACK_ROLES | {"loup_blanc"}
+
+
+def initialize_game(room: dict[str, Any], *, dealing: bool = False) -> None:
+    for player in room["players"]:
+        player["alive"] = True
+    room["game"] = {
+        "phase": "dealing" if dealing else "night",
+        "round": 1,
+        "actions": [],
+        "action_index": 0,
+        "pack_votes": [],
+        "pack_target": None,
+        "white_wolf_target": None,
+        "witch_save": False,
+        "witch_kill_target": None,
+        "enraged_target": None,
+        "enraged_used": False,
+        "witch_life_used": False,
+        "witch_death_used": False,
+        "lovers": None,
+        "deaths": [],
+        "votes": {},
+        "winners": [],
+        "message": "La première nuit commence.",
+        "private_results": {},
+        "after_hunters": "day",
+    }
+    if not dealing:
+        prepare_night(room)
+
+
+def current_action(room: dict[str, Any]) -> dict[str, Any] | None:
+    game = room["game"]
+    actions = game["actions"]
+    index = game["action_index"]
+    return actions[index] if index < len(actions) else None
+
+
+def prepare_night(room: dict[str, Any]) -> None:
+    game = room["game"]
+    game.update(
+        phase="night",
+        actions=[],
+        action_index=0,
+        pack_votes=[],
+        pack_target=None,
+        white_wolf_target=None,
+        witch_save=False,
+        witch_kill_target=None,
+        enraged_target=None,
+        votes={},
+        private_results={},
+        after_hunters="day",
+    )
+    players = room["players"]
+    alive_indices = [
+        index for index, player in enumerate(players) if player.get("alive", True)
+    ]
+    actions: list[dict[str, Any]] = []
+
+    if game["round"] == 1:
+        actions.extend(
+            {"actor_index": index, "kind": "cupidon"}
+            for index in alive_indices
+            if players[index]["role"] == "cupidon" and game["lovers"] is None
+        )
+    actions.extend(
+        {"actor_index": index, "kind": "wolf_vote"}
+        for index in alive_indices
+        if players[index]["role"] in PACK_ROLES
+    )
+    if not game["enraged_used"]:
+        actions.extend(
+            {"actor_index": index, "kind": "enrage"}
+            for index in alive_indices
+            if players[index]["role"] == "loup_enrage"
+        )
+    if game["round"] >= 2 and game["round"] % 2 == 0:
+        actions.extend(
+            {"actor_index": index, "kind": "white_wolf"}
+            for index in alive_indices
+            if players[index]["role"] == "loup_blanc"
+        )
+    if not (game["witch_life_used"] and game["witch_death_used"]):
+        actions.extend(
+            {"actor_index": index, "kind": "witch"}
+            for index in alive_indices
+            if players[index]["role"] == "sorciere"
+        )
+    actions.extend(
+        {"actor_index": index, "kind": "seer"}
+        for index in alive_indices
+        if players[index]["role"] == "voyante"
+    )
+    game["actions"] = actions
+
+
+def add_deaths(room: dict[str, Any], targets: list[int], cause: str) -> None:
+    game = room["game"]
+    players = room["players"]
+    pending = list(dict.fromkeys(targets))
+    added_hunters: set[int] = set()
+    while pending:
+        index = pending.pop(0)
+        if not 0 <= index < len(players) or not players[index].get("alive", True):
+            continue
+        player = players[index]
+        player["alive"] = False
+        game["deaths"].append({"name": player["name"], "cause": cause})
+        if player["role"] == "chasseur" and index not in added_hunters:
+            added_hunters.add(index)
+            game["actions"].append({"actor_index": index, "kind": "hunter"})
+        lovers = game["lovers"]
+        if lovers and index in lovers:
+            partner = lovers[1] if lovers[0] == index else lovers[0]
+            if players[partner].get("alive", True):
+                pending.append(partner)
+
+
+def check_winners(room: dict[str, Any]) -> list[str]:
+    players = room["players"]
+    game = room["game"]
+    alive = [player for player in players if player.get("alive", True)]
+    alive_roles = {player["role"] for player in alive}
+    winners = []
+    if not alive_roles.intersection(WOLF_ROLES | {"vampire"}):
+        winners.append("village")
+    if alive and all(player["role"] in PACK_ROLES for player in alive):
+        winners.append("meute")
+    white_wolf = next(
+        (player for player in players if player["role"] == "loup_blanc"), None
+    )
+    if white_wolf and white_wolf.get("alive", True):
+        white_index = players.index(white_wolf)
+        lovers = game["lovers"]
+        allowed_indices = {white_index}
+        if lovers and white_index in lovers:
+            allowed_indices.update(lovers)
+        living_indices = {
+            index for index, player in enumerate(players) if player.get("alive", True)
+        }
+        if living_indices.issubset(allowed_indices):
+            winners.append("loup_blanc")
+    lovers = game["lovers"]
+    if lovers and len(alive) == 2 and all(
+        players[index].get("alive", True) for index in lovers
+    ):
+        first_role, second_role = (
+            players[index]["role"] for index in lovers
+        )
+        first_camp = (
+            "meute" if first_role in PACK_ROLES
+            else "independent" if first_role == "loup_blanc"
+            else "village"
+        )
+        second_camp = (
+            "meute" if second_role in PACK_ROLES
+            else "independent" if second_role == "loup_blanc"
+            else "village"
+        )
+        if first_camp != second_camp:
+            winners.append("amoureux")
+    return winners
+
+
+def finish_hunter_chain(room: dict[str, Any], after_hunters: str) -> None:
+    game = room["game"]
+    game["action_index"] = 0
+    if game["actions"]:
+        game["phase"] = "hunter"
+        return
+
+    game["winners"] = check_winners(room)
+    if game["winners"]:
+        game["phase"] = "finished"
+        game["message"] = "La partie est terminée."
+    elif after_hunters == "day":
+        game["phase"] = "day"
+        game["votes"] = {}
+        game["message"] = "Le village débat puis vote."
+    else:
+        game["round"] += 1
+        prepare_night(room)
+        game["message"] = f"La nuit {game['round']} commence."
+
+
+def resolve_night(room: dict[str, Any]) -> None:
+    game = room["game"]
+    deaths = []
+    pack_target = game["pack_target"]
+    if pack_target is not None and not game["witch_save"]:
+        deaths.append(pack_target)
+    if game["white_wolf_target"] is not None:
+        deaths.append(game["white_wolf_target"])
+    if game["witch_kill_target"] is not None:
+        deaths.append(game["witch_kill_target"])
+    game["actions"] = []
+    game["action_index"] = 0
+    game["after_hunters"] = "day"
+    previous_death_count = len(game["deaths"])
+    add_deaths(room, deaths, "la nuit")
+    game["message"] = (
+        "Le village se réveille après une nuit meurtrière."
+        if len(game["deaths"]) > previous_death_count
+        else "Le village se réveille : personne n’a été éliminé cette nuit."
+    )
+    finish_hunter_chain(room, "day")
+
+
+def public_game_state(room: dict[str, Any]) -> dict[str, Any]:
+    game = room["game"]
+    action = current_action(room)
+    return {
+        "phase": game["phase"],
+        "round": game["round"],
+        "alive_players": [
+            player["name"] for player in room["players"] if player.get("alive", True)
+        ],
+        "alive_indices": [
+            index for index, player in enumerate(room["players"])
+            if player.get("alive", True)
+        ],
+        "deaths": game["deaths"],
+        "current_actor": (
+            room["players"][action["actor_index"]]["name"] if action else None
+        ),
+        "votes_received": len(game["votes"]),
+        "voted_indices": sorted(game["votes"]),
+        "vote_total": sum(player.get("alive", True) for player in room["players"]),
+        "winners": game["winners"],
+        "message": game["message"],
+    }
+
+
+def game_action_prompt(
+    room: dict[str, Any], actor_index: int
+) -> dict[str, Any] | None:
+    game = room["game"]
+    players = room["players"]
+    targets = [
+        {"value": str(index), "label": player["name"]}
+        for index, player in enumerate(players)
+        if player.get("alive", True) and index != actor_index
+    ]
+
+    def select(name: str, label: str, options: list[dict[str, str]], required: bool):
+        return {
+            "name": name,
+            "label": label,
+            "options": options,
+            "required": required,
+        }
+
+    action = current_action(room)
+    if game["phase"] == "day":
+        player = players[actor_index]
+        if not player.get("alive", True) or actor_index in game["votes"]:
+            return None
+        return {
+            "kind": "vote",
+            "prompt": "Choisis qui éliminer, ou abstiens-toi.",
+            "fields": [
+                select(
+                    "target",
+                    "Vote",
+                    [{"value": "", "label": "Abstention"}] + targets,
+                    False,
+                )
+            ],
+            "button": "Valider mon vote",
+        }
+    if not action or action["actor_index"] != actor_index:
+        return None
+
+    kind = action["kind"]
+    if kind == "cupidon":
+        return {
+            "kind": kind,
+            "prompt": "Première nuit : lie deux joueurs amoureux.",
+            "fields": [
+                select("first_target", "Premier amoureux", targets, True),
+                select("second_target", "Deuxième amoureux", targets, True),
+            ],
+            "button": "Lier les amoureux",
+        }
+    if kind == "wolf_vote":
+        options = [
+            {"value": str(index), "label": player["name"]}
+            for index, player in enumerate(players)
+            if player.get("alive", True) and player["role"] not in PACK_ROLES
+        ]
+        return {
+            "kind": kind,
+            "prompt": "La meute choisit sa victime.",
+            "fields": [select("target", "Victime de la meute", options, True)],
+            "button": "Voter pour la victime",
+        }
+    if kind == "enrage":
+        options = [{"value": "", "label": "Ne pas utiliser ce pouvoir"}] + [
+            {"value": str(index), "label": player["name"]}
+            for index, player in enumerate(players)
+            if player.get("alive", True) and player["role"] not in PACK_ROLES
+        ]
+        return {
+            "kind": kind,
+            "prompt": "Tu peux convertir une fois un joueur vivant en Loup-Garou ordinaire. Il perd son ancien rôle.",
+            "fields": [select("target", "Joueur à convertir", options, False)],
+            "button": "Valider",
+        }
+    if kind == "white_wolf":
+        return {
+            "kind": kind,
+            "prompt": "Cette nuit, tu peux éliminer un joueur de ton choix.",
+            "fields": [
+                select(
+                    "target",
+                    "Joueur à éliminer",
+                    [{"value": "", "label": "Ne pas utiliser ce pouvoir"}] + targets,
+                    False,
+                )
+            ],
+            "button": "Valider",
+        }
+    if kind == "witch":
+        pack_target = game["pack_target"]
+        save_options = [
+            {"value": "no", "label": "Non"},
+            {"value": "yes", "label": "Oui"},
+        ]
+        kill_options = [{"value": "", "label": "Ne pas utiliser la potion"}] + targets
+        fields = []
+        if not game["witch_life_used"]:
+            fields.append(
+                select("save", "Sauver la victime de la meute ?", save_options, True)
+            )
+        if not game["witch_death_used"]:
+            fields.append(
+                select("kill_target", "Potion de mort", kill_options, False)
+            )
+        victim = (
+            players[pack_target]["name"]
+            if pack_target is not None
+            else "aucune victime choisie par la meute"
+        )
+        return {
+            "kind": kind,
+            "prompt": f"La victime de la meute est : {victim}. Tu peux utiliser chacune de tes potions une seule fois.",
+            "fields": fields,
+            "button": "Utiliser / conserver mes potions",
+        }
+    if kind == "seer":
+        return {
+            "kind": kind,
+            "prompt": "Découvre le rôle d'un joueur vivant.",
+            "fields": [select("target", "Joueur à sonder", targets, True)],
+            "button": "Découvrir son rôle",
+        }
+    if kind == "hunter":
+        return {
+            "kind": kind,
+            "prompt": "Tu es mort, mais ton dernier geste de Chasseur peut éliminer un joueur vivant.",
+            "fields": [select("target", "Joueur à éliminer", targets, True)],
+            "button": "Tirer",
+        }
+    return None
 
 
 def room_view(room: dict[str, Any], viewer_id: str) -> dict[str, Any]:
@@ -253,6 +623,7 @@ def room_view(room: dict[str, Any], viewer_id: str) -> dict[str, Any]:
         "host_online": host_online,
         "all_ready": all_ready,
         "started": room["started"],
+        "game": public_game_state(room) if room["game"] else None,
     }
 
 
@@ -508,7 +879,283 @@ def start_room_route(code: str):
             player["role"] = role
         room["composition"] = composition
         room["started"] = True
+        initialize_game(room, dealing=room["mode"] == "local")
         return jsonify(room_view(room, player_id))
+
+
+@app.post("/api/rooms/<code>/game/begin")
+def begin_game_route(code: str):
+    room_code = code.strip().upper()
+    player_id = session.get("player_id")
+    with rooms_lock:
+        room = rooms.get(room_code)
+        if room is None:
+            return jsonify(error="Salon introuvable."), 404
+        if (
+            room["mode"] != "local"
+            or session.get("room_code") != room_code
+            or player_id != room["host_id"]
+        ):
+            return jsonify(error="Seule la personne hôte peut commencer une partie locale."), 403
+        if not room["started"] or room["game"] is None:
+            return jsonify(error="Les rôles ne sont pas encore distribués."), 409
+        if room["game"]["phase"] != "dealing":
+            return jsonify(error="La partie a déjà commencé."), 409
+        expected = set(range(len(room["players"])))
+        if (
+            room["local_named_indices"] != expected
+            or room["local_role_viewed_indices"] != expected
+        ):
+            return jsonify(error="Chaque joueur doit avoir saisi son pseudo et découvert son rôle."), 409
+        initialize_game(room)
+        return jsonify(room_view(room, player_id))
+
+
+@app.get("/api/rooms/<code>/game")
+def get_game_state_route(code: str):
+    room_code = code.strip().upper()
+    player_id = session.get("player_id")
+    with rooms_lock:
+        room = rooms.get(room_code)
+        if room is None:
+            return jsonify(error="Salon introuvable."), 404
+        if session.get("room_code") != room_code:
+            return jsonify(error="Tu ne fais pas partie de ce salon."), 403
+        if room["mode"] == "local":
+            if player_id != room["host_id"]:
+                return jsonify(error="Seule la personne hôte peut gérer la partie locale."), 403
+            actor_index = request.args.get("player_index", type=int)
+            if actor_index is None or not 0 <= actor_index < len(room["players"]):
+                return jsonify(error="Joueur local inconnu."), 400
+        else:
+            actor_index = next(
+                (
+                    index for index, player in enumerate(room["players"])
+                    if player["id"] == player_id
+                ),
+                None,
+            )
+            if actor_index is None:
+                return jsonify(error="Tu ne fais pas partie de ce salon."), 403
+            next(
+                player for player in room["players"] if player["id"] == player_id
+            )["last_seen"] = time.monotonic()
+
+        if room["game"] is None:
+            return jsonify(error="La partie n’a pas commencé."), 409
+        private_result = room["game"]["private_results"].get(str(actor_index))
+        return jsonify({
+            "state": public_game_state(room),
+            "action": game_action_prompt(room, actor_index),
+            "private_result": private_result,
+        })
+
+
+@app.post("/api/rooms/<code>/game/action")
+def submit_game_action_route(code: str):
+    room_code = code.strip().upper()
+    player_id = session.get("player_id")
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="La requête n’est pas valide."), 400
+
+    with rooms_lock:
+        room = rooms.get(room_code)
+        if room is None:
+            return jsonify(error="Salon introuvable."), 404
+        if session.get("room_code") != room_code:
+            return jsonify(error="Tu ne fais pas partie de ce salon."), 403
+        if room["mode"] == "local":
+            if player_id != room["host_id"]:
+                return jsonify(error="Seule la personne hôte peut gérer la partie locale."), 403
+            actor_index = data.get("player_index")
+            if (
+                isinstance(actor_index, bool)
+                or not isinstance(actor_index, int)
+                or not 0 <= actor_index < len(room["players"])
+            ):
+                return jsonify(error="Joueur local inconnu."), 400
+        else:
+            actor_index = next(
+                (
+                    index for index, player in enumerate(room["players"])
+                    if player["id"] == player_id
+                ),
+                None,
+            )
+            if actor_index is None:
+                return jsonify(error="Tu ne fais pas partie de ce salon."), 403
+
+        game = room["game"]
+        if not room["started"] or game is None or game["phase"] in {"dealing", "finished"}:
+            return jsonify(error="Aucune action n’est attendue actuellement."), 409
+
+        prompt = game_action_prompt(room, actor_index)
+        if prompt is None:
+            return jsonify(error="Ce n’est pas ton tour ou tu as déjà agi."), 409
+
+        def target_value(field: str, *, required: bool = True) -> int | None:
+            value = data.get(field)
+            if value is None or value == "":
+                if required:
+                    raise ValueError("Choisis un joueur.")
+                return None
+            if isinstance(value, bool):
+                raise ValueError("Le joueur choisi n’est pas valide.")
+            try:
+                index = int(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError("Le joueur choisi n’est pas valide.") from error
+            if not 0 <= index < len(room["players"]):
+                raise ValueError("Le joueur choisi n’est pas valide.")
+            if index == actor_index:
+                raise ValueError("Tu ne peux pas te choisir toi-même.")
+            if not room["players"][index].get("alive", True):
+                raise ValueError("Ce joueur n’est plus en vie.")
+            return index
+
+        try:
+            kind = prompt["kind"]
+            if kind == "vote":
+                target = target_value("target", required=False)
+                game["votes"][actor_index] = target
+                living_count = sum(
+                    player.get("alive", True) for player in room["players"]
+                )
+                if len(game["votes"]) == living_count:
+                    tallies: dict[int, int] = {}
+                    for vote in game["votes"].values():
+                        if vote is not None:
+                            tallies[vote] = tallies.get(vote, 0) + 1
+                    if tallies:
+                        highest = max(tallies.values())
+                        leaders = [
+                            index for index, count in tallies.items()
+                            if count == highest
+                        ]
+                        executed = leaders[0] if len(leaders) == 1 else None
+                    else:
+                        executed = None
+                    game["actions"] = []
+                    game["action_index"] = 0
+                    game["after_hunters"] = "night"
+                    if executed is None:
+                        game["message"] = "Le vote est terminé sans élimination (égalité ou abstentions)."
+                    else:
+                        game["message"] = (
+                            f"{room['players'][executed]['name']} est éliminé par le village."
+                        )
+                        add_deaths(room, [executed], "le vote du village")
+                    finish_hunter_chain(room, "night")
+            else:
+                action = current_action(room)
+                if action is None or action["actor_index"] != actor_index:
+                    return jsonify(error="Ce n’est pas ton tour."), 409
+
+                if kind == "cupidon":
+                    first = target_value("first_target")
+                    second = target_value("second_target")
+                    if first == second:
+                        raise ValueError("Choisis deux joueurs différents.")
+                    game["lovers"] = [first, second]
+                    game["message"] = "Cupidon a lié deux joueurs."
+                elif kind == "wolf_vote":
+                    target = target_value("target")
+                    if room["players"][target]["role"] in PACK_ROLES:
+                        raise ValueError("La meute ne peut pas choisir l’un des siens.")
+                    game["pack_votes"].append((actor_index, target))
+                elif kind == "enrage":
+                    target = target_value("target", required=False)
+                    if target is not None:
+                        if room["players"][target]["role"] in PACK_ROLES:
+                            raise ValueError("La meute ne peut pas convertir l’un des siens.")
+                        game["enraged_target"] = target
+                        game["enraged_used"] = True
+                        room["players"][target]["role"] = "loup_garou"
+                        game["private_results"][str(target)] = (
+                            "Tu as été contaminé : tu es désormais Loup-Garou et tu as perdu ton ancien rôle et ses pouvoirs."
+                        )
+                        completed_and_current = game["actions"][
+                            :game["action_index"] + 1
+                        ]
+                        remaining = [
+                            queued
+                            for queued in game["actions"][game["action_index"] + 1:]
+                            if queued["actor_index"] != target
+                        ]
+                        game["actions"] = completed_and_current + remaining
+                elif kind == "white_wolf":
+                    game["white_wolf_target"] = target_value("target", required=False)
+                elif kind == "witch":
+                    if not game["witch_life_used"]:
+                        save = data.get("save", "no")
+                        if save not in {"yes", "no"}:
+                            raise ValueError("Le choix de la potion de vie n’est pas valide.")
+                        if save == "yes":
+                            game["witch_save"] = True
+                            game["witch_life_used"] = True
+                    if not game["witch_death_used"]:
+                        kill_target = target_value("kill_target", required=False)
+                        if kill_target is not None:
+                            game["witch_kill_target"] = kill_target
+                            game["witch_death_used"] = True
+                elif kind == "seer":
+                    target = target_value("target")
+                    role_id = room["players"][target]["role"]
+                    role_name = ROLE_CARDS[role_id][0]
+                    game["private_results"][str(actor_index)] = (
+                        f"{room['players'][target]['name']} est {role_name}."
+                    )
+                elif kind == "hunter":
+                    target = target_value("target")
+                    game["actions"].pop(0)
+                    game["action_index"] = 0
+                    add_deaths(room, [target], "le tir du Chasseur")
+                    game["message"] = (
+                        f"Le Chasseur a éliminé {room['players'][target]['name']}."
+                    )
+                    if game["actions"]:
+                        game["phase"] = "hunter"
+                    else:
+                        finish_hunter_chain(room, game["after_hunters"])
+                    if room["mode"] == "online":
+                        room["players"][actor_index]["last_seen"] = time.monotonic()
+                    return jsonify({
+                        "state": public_game_state(room),
+                        "action": game_action_prompt(room, actor_index),
+                    })
+                else:
+                    raise ValueError("Action de jeu inconnue.")
+
+                game["action_index"] += 1
+                next_action = current_action(room)
+                if kind == "wolf_vote" and (
+                    next_action is None or next_action["kind"] != "wolf_vote"
+                ):
+                    tallies = {}
+                    for _, vote in game["pack_votes"]:
+                        tallies[vote] = tallies.get(vote, 0) + 1
+                    if tallies:
+                        highest = max(tallies.values())
+                        leaders = [
+                            index for index, count in tallies.items()
+                            if count == highest
+                        ]
+                        game["pack_target"] = leaders[0] if len(leaders) == 1 else None
+                if game["action_index"] >= len(game["actions"]):
+                    resolve_night(room)
+                elif game["phase"] == "hunter":
+                    game["action_index"] = 0
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
+
+        if room["mode"] == "online":
+            room["players"][actor_index]["last_seen"] = time.monotonic()
+        return jsonify({
+            "state": public_game_state(room),
+            "action": game_action_prompt(room, actor_index),
+            "private_result": game["private_results"].get(str(actor_index)),
+        })
 
 
 @app.post("/api/rooms/<code>/players/<int:player_index>/name")

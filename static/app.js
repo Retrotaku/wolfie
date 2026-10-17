@@ -13,6 +13,7 @@ const modePanels = {
 const compositionPanel = document.querySelector("#composition-panel");
 const compositionStatus = document.querySelector("#composition-status");
 const compositionInputs = [...document.querySelectorAll("[data-role]")];
+const gamePanel = document.querySelector("#game-panel");
 const roleLabels = {
   voyante: "Voyante",
   sorciere: "Sorcière",
@@ -24,6 +25,7 @@ const roleLabels = {
 let activeRoom = null;
 let activeRoomView = null;
 let pollTimer = null;
+let gamePollTimer = null;
 let compositionDirty = false;
 let onlineRoleLoaded = false;
 let localGameStarted = false;
@@ -143,6 +145,7 @@ async function savePlayerName() {
     setupStatus.textContent = "";
     activeRoom = updatedRoom.code;
     showLobby(updatedRoom);
+    updatedRoom.local_role_viewed_indices.forEach((index) => revealedLocalPlayers.add(index));
     openLocalRoleCard(playerIndex);
   } catch (error) {
     setupStatus.textContent = error.message;
@@ -191,6 +194,7 @@ async function postJson(url, data) {
 }
 
 function showLobby(room) {
+  if (gamePollTimer) window.clearInterval(gamePollTimer);
   activeRoom = room.code;
   activeRoomView = room;
   localGameStarted = false;
@@ -345,12 +349,18 @@ function initializeRoleReveal(room) {
   document.querySelector("#revealed-role").hidden = true;
   if (room.mode === "local") {
     document.querySelector("#online-role-flow").hidden = true;
-    document.querySelector("#local-role-flow").hidden = false;
+    document.querySelector("#local-role-flow").hidden = room.game?.phase !== "dealing";
+    gamePanel.hidden = room.game?.phase === "dealing";
+    if (room.game?.phase !== "dealing" && localGameStarted) {
+      refreshGamePanel();
+      return;
+    }
     renderLocalRoleBoard();
     return;
   }
   document.querySelector("#online-role-flow").hidden = false;
   document.querySelector("#local-role-flow").hidden = true;
+  gamePanel.hidden = false;
   title.textContent = "Ton rôle secret";
   instruction.textContent = "Seule ta carte personnelle est affichée sur cet appareil.";
   if (!onlineRoleLoaded) {
@@ -363,7 +373,170 @@ function initializeRoleReveal(room) {
       })
       .catch((error) => { lobbyStatus.textContent = error.message; });
   }
+  refreshGamePanel();
+  if (gamePollTimer) window.clearInterval(gamePollTimer);
+  gamePollTimer = window.setInterval(refreshGamePanel, 2000);
 }
+
+function gamePhaseLabel(phase) {
+  return {
+    dealing: "Distribution des rôles",
+    night: "La nuit tombe",
+    day: "Le village se réveille",
+    hunter: "Dernier tir du Chasseur",
+    finished: "Partie terminée",
+  }[phase] || "Partie en cours";
+}
+
+function renderGamePanel(response) {
+  const state = response.state;
+  document.querySelector("#game-round").textContent =
+    state.phase === "day" ? `JOUR ${state.round}` : `NUIT ${state.round}`;
+  document.querySelector("#game-phase-title").textContent = gamePhaseLabel(state.phase);
+  document.querySelector("#game-message").textContent = state.message;
+  document.querySelector("#game-progress").textContent =
+    state.phase === "day"
+      ? `Votes reçus : ${state.votes_received}/${state.vote_total}`
+      : state.current_actor ? `Action en cours : ${state.current_actor}` : "";
+  const deaths = document.querySelector("#game-deaths");
+  deaths.replaceChildren();
+  if (state.deaths.length) {
+    const heading = document.createElement("strong");
+    heading.textContent = "Joueurs éliminés";
+    const list = document.createElement("ul");
+    state.deaths.forEach((death) => {
+      const item = document.createElement("li");
+      item.textContent = `${death.name} — ${death.cause}`;
+      list.append(item);
+    });
+    deaths.append(heading, list);
+  }
+
+  const area = document.querySelector("#game-action-area");
+  area.replaceChildren();
+  const action = response.action;
+  if (action) {
+    const prompt = document.createElement("p");
+    prompt.className = "game-action-prompt";
+    prompt.textContent = action.prompt;
+    const form = document.createElement("form");
+    form.id = "game-action-form";
+    action.fields.forEach((field) => {
+      const label = document.createElement("label");
+      label.textContent = field.label;
+      const select = document.createElement("select");
+      select.name = field.name;
+      select.required = field.required;
+      field.options.forEach((option) => {
+        const choice = document.createElement("option");
+        choice.value = option.value;
+        choice.textContent = option.label;
+        select.append(choice);
+      });
+      label.append(select);
+      form.append(label);
+    });
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.className = "primary-button";
+    submit.textContent = action.button;
+    form.append(submit);
+    area.append(prompt, form);
+  } else if (state.phase === "finished") {
+    const winners = document.createElement("p");
+    const names = {
+      village: "Village",
+      meute: "Meute",
+      loup_blanc: "Loup Blanc",
+      amoureux: "Amoureux",
+    };
+    winners.className = "game-winners";
+    winners.textContent = state.winners.map((winner) => names[winner] || winner).join(" · ");
+    area.append(winners);
+  } else {
+    const waiting = document.createElement("p");
+    waiting.textContent = state.phase === "day"
+      ? "Tous les votes sont enregistrés."
+      : state.current_actor
+        ? `En attente de ${state.current_actor}…`
+        : "En attente de la prochaine étape…";
+    area.append(waiting);
+  }
+  if (response.private_result) {
+    const privateResult = document.createElement("p");
+    privateResult.className = "private-game-result";
+    privateResult.textContent = response.private_result;
+    area.append(privateResult);
+  }
+}
+
+async function refreshGamePanel() {
+  if (!activeRoom || !activeRoomView?.started || !activeRoomView.game) return;
+  try {
+    let playerIndex = null;
+    let url = `/api/rooms/${encodeURIComponent(activeRoom)}/game`;
+    if (activeRoomView.mode === "local") {
+      const state = activeRoomView.game;
+      if (state.phase === "day") {
+        playerIndex = state.alive_indices.find((index) => !state.voted_indices.includes(index));
+      } else if (state.current_actor) {
+        playerIndex = activeRoomView.players.findIndex(
+          (player) => player.name === state.current_actor,
+        );
+      }
+      if (playerIndex === undefined || playerIndex < 0) return;
+      if (playerIndex === null) {
+        renderGamePanel({ state, action: null });
+        return;
+      }
+      url += `?player_index=${playerIndex}`;
+    }
+    const response = await fetch(url);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Impossible de charger la partie.");
+    renderGamePanel(result);
+  } catch (error) {
+    lobbyStatus.textContent = error.message;
+  }
+}
+
+document.querySelector("#game-action-area").addEventListener("submit", async (event) => {
+  if (event.target.id !== "game-action-form" || !activeRoom) return;
+  event.preventDefault();
+  const payload = {};
+  for (const [key, value] of new FormData(event.target).entries()) {
+    payload[key] = key === "save"
+      ? value
+      : value === "" ? null : Number(value);
+  }
+  let playerIndex = null;
+  if (activeRoomView.mode === "local") {
+    const phase = activeRoomView.game.phase;
+    playerIndex = phase === "day"
+      ? activeRoomView.game.alive_indices.find(
+        (index) => !activeRoomView.game.voted_indices.includes(index),
+      )
+      : activeRoomView.players.findIndex(
+        (player) => player.name === activeRoomView.game.current_actor,
+      );
+    payload.player_index = playerIndex;
+  }
+  const submit = event.target.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  try {
+    await postJson(`/api/rooms/${encodeURIComponent(activeRoom)}/game/action`, payload);
+    if (activeRoomView.mode === "local") {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(activeRoom)}`);
+      const room = await response.json();
+      if (!response.ok) throw new Error(room.error || "Impossible de retrouver la partie.");
+      activeRoomView = room;
+    }
+    await refreshGamePanel();
+  } catch (error) {
+    lobbyStatus.textContent = error.message;
+    submit.disabled = false;
+  }
+});
 
 function renderLocalRoleBoard() {
   const board = document.querySelector("#local-role-board");
@@ -600,12 +773,24 @@ document.querySelector("#deal-acknowledge").addEventListener("click", () => {
   renderLocalRoleBoard();
 });
 
-document.querySelector("#local-game-start").addEventListener("click", () => {
-  localGameStarted = true;
-  document.querySelector("#local-game-start").hidden = true;
-  const status = document.querySelector("#local-game-status");
-  status.textContent = "La partie commence ! Les cartes restent disponibles pour revoir les rôles.";
-  status.hidden = false;
+document.querySelector("#local-game-start").addEventListener("click", async () => {
+  if (!activeRoom) return;
+  const button = document.querySelector("#local-game-start");
+  button.disabled = true;
+  try {
+    const room = await postJson(
+      `/api/rooms/${encodeURIComponent(activeRoom)}/game/begin`,
+      {},
+    );
+    localGameStarted = true;
+    activeRoomView = room;
+    renderRoom(room);
+    initializeRoleReveal(room);
+  } catch (error) {
+    document.querySelector("#local-game-status").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.querySelector("#next-player-form").addEventListener("submit", async (event) => {
@@ -653,6 +838,10 @@ document.querySelector("#back-button").addEventListener("click", async () => {
   if (pollTimer) {
     window.clearInterval(pollTimer);
     pollTimer = null;
+  }
+  if (gamePollTimer) {
+    window.clearInterval(gamePollTimer);
+    gamePollTimer = null;
   }
   activeRoom = null;
   activeRoomView = null;

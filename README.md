@@ -18,7 +18,7 @@ La proposition de base est la suivante :
 
 Le Loup Enragé est proposé à partir de 9 joueurs et le Loup Blanc à partir de 12. Ces variantes remplacent des Loups-Garous ordinaires dans la meute. Les réglages de rôles peuvent être changés par l’hôte avant le lancement ; toute place libérée par un rôle spécial non sélectionné est redistribuée à égalité entre loups et villageois, avec un villageois supplémentaire si besoin.
 
-Les personnages principaux du jeu restent limités à : Villageois, Loup-Garou, Loup Enragé, Loup Blanc, Voyante, Sorcière, Cupidon et Chasseur. Les autres personnages disponibles dans la banque de cartes sont classés premium et ne font pas partie de la composition standard.
+Les personnages principaux du jeu restent limités à : Villageois, Loup-Garou, Loup Enragé, Loup Blanc, Voyante, Sorcière, Cupidon et Chasseur. Les autres personnages disponibles dans la banque de cartes sont classés premium et ne font pas partie de la composition standard. Les règles et l'ordre des actions sont détaillés dans [REGLES.md](./REGLES.md).
 
 ## Lancer en local
 
@@ -35,7 +35,7 @@ En mode local, saisis de six à quatorze noms, un par ligne. En mode en ligne, l
 
 ## Salons en ligne
 
-Le serveur doit rester allumé et être accessible par tous les joueurs. Pour des joueurs hors du réseau local, il faut déployer Wolfie sur un serveur public accessible en HTTPS. Les salons et leurs participants sont conservés en mémoire : ils disparaissent au redémarrage du serveur. Les rôles sont distribués, mais les tours de nuit, pouvoirs et votes restent à implémenter.
+Le serveur doit rester allumé et être accessible par tous les joueurs. Pour des joueurs hors du réseau local, il faut déployer Wolfie sur un serveur public accessible en HTTPS. Les salons et leurs participants sont conservés en mémoire : ils disparaissent au redémarrage du serveur. Les tours nocturnes, les pouvoirs principaux, les votes, les liens amoureux, les morts du Chasseur et les conditions de victoire sont gérés. Les rôles premium ne sont pas activés.
 
 ## Déployer sur GitHub + Render
 

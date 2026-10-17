@@ -237,6 +237,21 @@ input::placeholder, textarea::placeholder { color: #777466; }
 .revealed-role img { display: block; width: min(100%, 190px); max-height: 340px; margin: 0 auto; object-fit: contain; }
 .revealed-role h4 { margin: 13px 0 6px; color: var(--gold); font-size: 19px; font-weight: 400; }
 .revealed-role p { margin: 0; }
+.game-panel { max-width: 560px; margin: 24px auto 0; padding: 21px; border: 1px solid #514a36; background: #11110f; text-align: left; }
+.game-panel[hidden] { display: none; }
+.game-panel > .eyebrow { margin: 0; }
+.game-panel h3 { margin: 8px 0 10px; color: var(--gold); font-size: 23px; font-weight: 400; }
+.game-panel > p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.game-panel .game-progress { color: var(--moss); font: 10px var(--mono); }
+.game-deaths { margin: 14px 0; color: #d3cdb9; font-size: 11px; }
+.game-deaths ul { padding-left: 18px; color: var(--muted); line-height: 1.7; }
+.game-action-area { margin-top: 16px; }
+.game-action-prompt { color: var(--text); font-size: 13px; line-height: 1.6; }
+#game-action-form label { margin: 13px 0 8px; }
+#game-action-form select { margin-top: 7px; }
+#game-action-form button { margin-top: 17px; }
+.private-game-result { padding: 12px; border-left: 2px solid var(--gold); background: #d8b66c0b; color: var(--gold) !important; }
+.game-winners { padding: 14px; border: 1px solid var(--gold); color: var(--gold) !important; font: 700 13px var(--mono); text-align: center; }
 .notice { margin: 25px 0 50px; color: #8f8a79; font-size: 11px; line-height: 1.7; text-align: center; }
 footer { display: flex; justify-content: space-between; padding: 18px max(6vw, calc((100vw - 1120px) / 2)) 28px; border-top: 1px solid #ffffff18; color: #777363; font: 9px var(--mono); letter-spacing: .14em; }
 @keyframes pulse { 50% { opacity: .55; box-shadow: 0 0 16px #a5b47a; } }

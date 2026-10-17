@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#101010">
     <title>Wolfie — Le village s’endort</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20') }}">
-    <script src="{{ url_for('static', filename='app.js', v='20') }}" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='22') }}">
+    <script src="{{ url_for('static', filename='app.js', v='22') }}" defer></script>
   </head>
   <body>
     <div class="moon moon-one" aria-hidden="true"></div>
@@ -179,11 +179,19 @@
             </section>
             <p class="deal-status" id="deal-status" role="status"></p>
           </div>
+          <section class="game-panel" id="game-panel" hidden aria-live="polite">
+            <p class="eyebrow" id="game-round">NUIT 1</p>
+            <h3 id="game-phase-title">La nuit tombe</h3>
+            <p id="game-message"></p>
+            <p class="game-progress" id="game-progress"></p>
+            <div class="game-deaths" id="game-deaths"></div>
+            <div class="game-action-area" id="game-action-area"></div>
+          </section>
         </div>
         </section>
       </div>
 
-      <p class="notice">Les compositions proposées sont personnalisables avant le lancement. Les tours de nuit et les votes arriveront avec les règles du jeu.</p>
+      <p class="notice">Les rôles principaux disposent de pouvoirs, de tours de nuit, de votes et de conditions de victoire. Les personnages premium ne sont pas activés dans les parties standard.</p>
     </main>
 
     <footer><span>WOLFIE</span><span>GARDE UN ŒIL SUR LA LUNE</span></footer>
