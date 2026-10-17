@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: wolfie
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT"
+    envVars:
+      - key: WOLFIE_SECRET_KEY
+        generateValue: true
+      - key: SESSION_COOKIE_SECURE
+        value: "1"
+      - key: PREFERRED_URL_SCHEME
+        value: "https"

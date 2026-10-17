@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101010">
+    <title>Wolfie — Le village s’endort</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20') }}">
+    <script src="{{ url_for('static', filename='app.js', v='20') }}" defer></script>
+  </head>
+  <body>
+    <div class="moon moon-one" aria-hidden="true"></div>
+    <div class="moon moon-two" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Wolfie, accueil">
+        <span class="brand-mark" aria-hidden="true">W</span>
+        <span>WOLFIE</span>
+      </a>
+      <span class="topbar-note"><span class="live-dot"></span> LE VILLAGE EST À TOI</span>
+    </header>
+
+    <main data-minimum-players="{{ minimum_players }}" data-maximum-players="{{ maximum_players }}">
+      <section class="hero">
+        <p class="eyebrow">UNE NUIT. UN VILLAGE. DES SECRETS.</p>
+        <h1>Le village<br><span>s’endort.</span></h1>
+        <p class="hero-copy">Rassemble tes amis autour d’un écran ou retrouve-les dans un salon en ligne. Wolfie commence ici.</p>
+        <div class="minimum-note"><span aria-hidden="true">✦</span> De {{ minimum_players }} à {{ maximum_players }} joueurs</div>
+      </section>
+
+      <div class="room-workspace" id="room-workspace">
+        <div class="room-setup-column">
+          <section class="lobby-options" id="lobby-options" aria-label="Choisir le mode de jeu">
+        <article class="mode-card">
+          <div class="mode-choices" id="mode-choices">
+            <button class="mode-choice" type="button" data-mode="local">
+              <span class="mode-icon" aria-hidden="true">♧</span>
+              <span class="choice-title">Autour du feu</span>
+              <span class="choice-description">Jouer ensemble sur un seul appareil</span>
+              <span class="choice-arrow" aria-hidden="true">↗</span>
+            </button>
+            <button class="mode-choice" type="button" data-mode="online">
+              <span class="mode-icon" aria-hidden="true">☾</span>
+              <span class="choice-title">La meute à distance</span>
+              <span class="choice-description">Créer ou rejoindre un salon en ligne</span>
+              <span class="choice-arrow" aria-hidden="true">↗</span>
+            </button>
+          </div>
+          <section class="mode-panel" id="local-panel" hidden>
+            <button class="back-button mode-back" type="button">← Changer de mode</button>
+            <span class="card-index">SUR LE MÊME APPAREIL</span>
+            <div class="mode-icon" aria-hidden="true">♧</div>
+            <p>Un seul appareil, tout le monde réuni. Prépare la liste des joueurs avant de lancer la partie locale.</p>
+            <form id="local-form">
+              <label for="local-player-count">Nombre de joueurs ({{ minimum_players }} à {{ maximum_players }})</label>
+              <select id="local-player-count">
+                {% for count in range(minimum_players, maximum_players + 1) %}
+                <option value="{{ count }}">{{ count }} joueurs</option>
+                {% endfor %}
+              </select>
+              <div class="player-fields" id="local-player-fields"></div>
+              <div class="name-entry-progress">
+                <span id="name-entry-progress-count">0/0</span>
+                <div class="deal-progress-track"><span id="name-entry-progress-fill"></span></div>
+              </div>
+              <section class="player-name-entry" id="player-name-entry" hidden aria-labelledby="player-name-title">
+                <button class="back-button player-name-back" id="player-name-back" type="button">← Retour aux joueurs</button>
+                <h3 id="player-name-title">Saisis ton pseudo pour dévoiler ton rôle</h3>
+                <label class="visually-hidden" for="player-name-input">Pseudo du joueur</label>
+                <input id="player-name-input" type="text" maxlength="24" placeholder="Ton pseudo" autocomplete="off">
+                <button class="primary-button" id="save-player-name" type="submit">Valider le pseudo <span>↗</span></button>
+              </section>
+            </form>
+          </section>
+          <section class="mode-panel" id="online-panel" hidden>
+            <button class="back-button mode-back" type="button">← Changer de mode</button>
+            <span class="card-index">À DISTANCE</span>
+            <div class="mode-icon" aria-hidden="true">☾</div>
+            <p>Crée un salon et partage son code, ou rejoins celui de tes amis.</p>
+            <form id="create-online-form" class="online-create-form">
+              <label for="host-name">Ton nom</label>
+              <input id="host-name" name="name" maxlength="24" placeholder="Comment t’appelles-tu ?" required>
+              <button class="primary-button" type="submit">Créer un salon <span>↗</span></button>
+            </form>
+            <div class="form-divider"><span>OU REJOINDRE UN SALON</span></div>
+            <form id="join-form" class="join-form">
+              <label for="join-name">Ton nom</label>
+              <input id="join-name" name="name" maxlength="24" placeholder="Ton nom dans la partie" required>
+              <label for="room-code">Code du salon</label>
+              <input id="room-code" name="code" maxlength="6" placeholder="EX. A7K2QF" autocomplete="off" required>
+              <button class="secondary-button" type="submit">Rejoindre <span>→</span></button>
+            </form>
+          </section>
+        </article>
+          </section>
+          <p class="setup-status" id="setup-status" role="status"></p>
+        </div>
+
+        <section class="lobby-view" id="lobby-view" hidden aria-live="polite">
+        <div class="lobby-heading">
+          <div>
+            <p class="eyebrow" id="room-mode">SALON</p>
+            <h2 id="room-title">Le village se rassemble</h2>
+          </div>
+          <button class="back-button" id="back-button" type="button">← Accueil</button>
+        </div>
+        <div class="room-code-line"><span>CODE DU SALON</span><strong id="room-code-display"></strong><button id="copy-code" type="button">Copier</button></div>
+        <div class="roster-heading"><h3>Joueurs présents</h3><span id="player-count"></span></div>
+        <ol class="player-list" id="player-list"></ol>
+        <button class="secondary-button ready-toggle" id="ready-toggle" type="button" hidden>Me mettre prêt</button>
+        <p class="lobby-status" id="lobby-status" role="status"></p>
+        <button class="primary-button start-button" id="start-game" type="button" hidden>Lancer la partie <span>↗</span></button>
+        <section class="composition-panel" id="composition-panel" hidden aria-labelledby="composition-title">
+          <div class="composition-heading">
+            <div>
+              <p class="eyebrow">PROPOSITION DE BASE, À PERSONNALISER</p>
+              <h3 id="composition-title">Composer les rôles</h3>
+            </div>
+            <span class="composition-count" id="composition-count"></span>
+          </div>
+          <p class="composition-note">Les rôles spéciaux sont uniques. Le nombre de loups et de villageois reste équilibré ; le villageois prend la place supplémentaire si besoin. Les variantes remplacent des loups ordinaires.</p>
+          <div class="role-options">
+            <label class="role-option"><input type="checkbox" data-role="voyante"><span>Voyante</span></label>
+            <label class="role-option"><input type="checkbox" data-role="sorciere"><span>Sorcière</span></label>
+            <label class="role-option"><input type="checkbox" data-role="cupidon"><span>Cupidon</span></label>
+            <label class="role-option"><input type="checkbox" data-role="chasseur"><span>Chasseur</span></label>
+            <label class="role-option wolf-option"><input type="checkbox" data-role="loup_enrage"><span>Loup Enragé</span></label>
+            <label class="role-option wolf-option"><input type="checkbox" data-role="loup_blanc"><span>Loup Blanc</span></label>
+          </div>
+          <div class="composition-summary" id="composition-summary"></div>
+          <button class="secondary-button save-composition" id="save-composition" type="button">Valider cette composition</button>
+          <p class="composition-status" id="composition-status" role="status"></p>
+        </section>
+        <div class="waiting-message" id="waiting-message">Le salon démarre entre {{ minimum_players }} et {{ maximum_players }} joueurs.</div>
+        <div class="game-placeholder" id="game-placeholder" hidden>
+          <div id="online-role-flow">
+            <span class="placeholder-sigil" aria-hidden="true">☾</span>
+            <h3 id="role-reveal-title">Les rôles sont distribués</h3>
+            <p id="role-reveal-instruction"></p>
+            <div class="revealed-role" id="revealed-role" hidden>
+              <img id="role-image" alt="" hidden>
+              <h4 id="role-name"></h4>
+              <p id="role-description"></p>
+            </div>
+          </div>
+          <div class="local-role-flow" id="local-role-flow" hidden>
+            <section class="next-player-entry" id="next-player-entry" hidden>
+              <h3 id="next-player-title">Saisis ton pseudo pour dévoiler ton rôle</h3>
+              <form id="next-player-form">
+                <label class="visually-hidden" for="next-player-name">Pseudo du joueur</label>
+                <input id="next-player-name" type="text" maxlength="24" placeholder="Ton pseudo" autocomplete="off" required>
+                <button class="primary-button" type="submit">Valider le pseudo <span>↗</span></button>
+              </form>
+            </section>
+            <section class="deal-card-screen" id="deal-card-screen" hidden>
+              <h3 id="deal-player-name"></h3>
+              <div class="deal-card-flip" id="deal-card-flip">
+                <div class="deal-card-face deal-card-front">
+                  <img id="deal-role-image" alt="">
+                </div>
+                <div class="deal-card-face deal-card-back">
+                  <button id="deal-card-back" type="button" aria-label="Toucher la carte pour découvrir ton rôle">
+                    <img src="{{ url_for('resource_asset', asset_path='cartes/Dos_carte.jpeg') }}" alt="" aria-hidden="true">
+                  </button>
+                </div>
+              </div>
+              <p id="deal-card-instruction">Touche la carte pour découvrir ton rôle</p>
+              <button class="primary-button deal-acknowledge" id="deal-acknowledge" type="button" hidden>C’est compris</button>
+            </section>
+            <section id="local-role-board" hidden>
+              <h3>TOUS LES RÔLES SONT DÉCOUVERTS</h3>
+              <p>La distribution des rôles est terminée.</p>
+              <div class="deal-grid" id="deal-grid"></div>
+              <div class="deal-progress">
+                <span id="deal-progress-count">0/0</span>
+                <div class="deal-progress-track"><span id="deal-progress-fill"></span></div>
+              </div>
+              <button class="primary-button local-game-start" id="local-game-start" type="button" hidden>Commencer la partie <span>↗</span></button>
+              <p class="local-game-status" id="local-game-status" role="status" hidden></p>
+            </section>
+            <p class="deal-status" id="deal-status" role="status"></p>
+          </div>
+        </div>
+        </section>
+      </div>
+
+      <p class="notice">Les compositions proposées sont personnalisables avant le lancement. Les tours de nuit et les votes arriveront avec les règles du jeu.</p>
+    </main>
+
+    <footer><span>WOLFIE</span><span>GARDE UN ŒIL SUR LA LUNE</span></footer>
+  </body>
+</html>
