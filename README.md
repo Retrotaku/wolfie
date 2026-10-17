@@ -36,3 +36,41 @@ En mode local, saisis de six à quatorze noms, un par ligne. En mode en ligne, l
 ## Salons en ligne
 
 Le serveur doit rester allumé et être accessible par tous les joueurs. Pour des joueurs hors du réseau local, il faut déployer Wolfie sur un serveur public accessible en HTTPS. Les salons et leurs participants sont conservés en mémoire : ils disparaissent au redémarrage du serveur. Les rôles sont distribués, mais les tours de nuit, pouvoirs et votes restent à implémenter.
+
+## Déployer sur GitHub + Render
+
+Le dépôt est maintenant prêt pour une publication publique.
+
+1. Connecte-toi à GitHub dans le terminal :
+
+```powershell
+& "C:\Program Files\GitHub CLI\gh.exe" auth login
+```
+
+2. Crée le dépôt GitHub et pousse le projet :
+
+```powershell
+git remote add origin https://github.com/<ton-user>/wolfie.git
+git branch -M main
+git push -u origin main
+```
+
+Ou, si tu veux le créer directement depuis GitHub CLI :
+
+```powershell
+& "C:\Program Files\GitHub CLI\gh.exe" repo create wolfie --public --source=. --remote=origin --push
+```
+
+3. Sur Render, crée un service Web à partir de ce dépôt et sélectionne `render.yaml`.
+4. L’application sera accessible sur une URL publique Render, compatible avec les salons en ligne.
+
+## À prévoir pour la vraie version "comptes joueurs"
+
+La version actuelle reste un prototype de jeu avec salles en mémoire. Pour ajouter des comptes joueurs, profils personnels et données persistantes, il faudra plus tard :
+
+- une base PostgreSQL,
+- une authentification utilisateur (Supabase/Auth),
+- une table `users`, `profiles`, `games`, `sessions`,
+- une interface d’accueil personnelle (dashboard, profil, historique).
+
+Ce socle de déploiement est prêt pour passer à cette étape sans refaire l’architecture de base.
