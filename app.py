@@ -283,6 +283,21 @@ def default_composition(player_count: int) -> dict[str, list[str]] | None:
 
 
 def composition_counts(player_count: int, composition: dict[str, list[str]]) -> dict[str, Any]:
+    role_counts = composition.get("role_counts")
+    if role_counts is not None:
+        return {
+            "special_roles": composition["special_roles"],
+            "wolf_roles": composition["wolf_roles"],
+            "wolf_count": sum(
+                role_counts.get(role, 0)
+                for role in {"loup_garou", *MAIN_WOLF_VARIANTS}
+            ),
+            "villager_count": role_counts.get("villageois", 0),
+            "special_count": sum(
+                role_counts.get(role, 0) for role in MAIN_SPECIAL_ROLES
+            ),
+            "role_counts": role_counts,
+        }
     special_count = len(composition["special_roles"])
     wolf_count = (player_count - special_count) // 2
     villager_count = player_count - special_count - wolf_count
@@ -298,6 +313,46 @@ def composition_counts(player_count: int, composition: dict[str, list[str]]) -> 
 def validate_composition(value: Any, player_count: int) -> dict[str, list[str]]:
     if not isinstance(value, dict):
         raise ValueError("La composition des rôles n’est pas valide.")
+
+    if "role_counts" in value:
+        role_counts = value["role_counts"]
+        if (
+            not isinstance(role_counts, dict)
+            or any(role not in MAIN_ROLE_IDS for role in role_counts)
+            or any(
+                not isinstance(count, int) or isinstance(count, bool) or count < 0
+                for count in role_counts.values()
+            )
+        ):
+            raise ValueError("Les quantités de rôles ne sont pas valides.")
+
+        normalized_counts = {
+            role: role_counts.get(role, 0) for role in ROLE_CARDS if role in MAIN_ROLE_IDS
+        }
+        if any(
+            normalized_counts[role] > 1
+            for role in MAIN_SPECIAL_ROLES | MAIN_WOLF_VARIANTS
+        ):
+            raise ValueError("Chaque rôle spécial ne peut être choisi qu’une fois.")
+        if sum(normalized_counts.values()) != player_count:
+            raise ValueError("La composition doit contenir exactement un rôle par joueur.")
+        if not any(
+            normalized_counts[role] > 0
+            for role in {"loup_garou", *MAIN_WOLF_VARIANTS}
+        ):
+            raise ValueError("La composition doit contenir au moins un Loup-Garou.")
+
+        return {
+            "special_roles": [
+                role for role in ROLE_CARDS
+                if role in MAIN_SPECIAL_ROLES and normalized_counts[role]
+            ],
+            "wolf_roles": [
+                role for role in ROLE_CARDS
+                if role in MAIN_WOLF_VARIANTS and normalized_counts[role]
+            ],
+            "role_counts": normalized_counts,
+        }
 
     special_roles = value.get("special_roles")
     wolf_roles = value.get("wolf_roles")
@@ -379,6 +434,18 @@ WOLF_ROLES = PACK_ROLES | {"loup_blanc"}
 
 
 def initialize_game(room: dict[str, Any], *, dealing: bool = False) -> None:
+    previous_game = room.get("game")
+    chief_index = (
+        previous_game.get("chief_index")
+        if isinstance(previous_game, dict)
+        else None
+    )
+    if (
+        isinstance(chief_index, bool)
+        or not isinstance(chief_index, int)
+        or not 0 <= chief_index < len(room["players"])
+    ):
+        chief_index = secrets.randbelow(len(room["players"]))
     for player in room["players"]:
         player["alive"] = True
     room["game"] = {
@@ -396,6 +463,7 @@ def initialize_game(room: dict[str, Any], *, dealing: bool = False) -> None:
         "witch_life_used": False,
         "witch_death_used": False,
         "lovers": None,
+        "chief_index": chief_index,
         "deaths": [],
         "votes": {},
         "winners": [],
@@ -461,10 +529,35 @@ def resolve_day_votes(room: dict[str, Any]) -> None:
         leaders = [index for index, count in tallies.items() if count == highest]
         executed = leaders[0] if len(leaders) == 1 else None
     else:
+        leaders = []
         executed = None
     game["actions"] = []
     game["action_index"] = 0
     game["after_hunters"] = "night"
+    if len(leaders) > 1:
+        chief_index = game["chief_index"]
+        if (
+            not isinstance(chief_index, int)
+            or isinstance(chief_index, bool)
+            or not 0 <= chief_index < len(room["players"])
+            or not room["players"][chief_index].get("alive", True)
+        ):
+            game["message"] = (
+                "Le village est partagé, mais aucun Chef ne peut départager les voix. "
+                "Personne n’est banni aujourd’hui."
+            )
+            finish_hunter_chain(room, "night")
+            return
+        game["actions"] = [{
+            "actor_index": chief_index,
+            "kind": "chief_tiebreak",
+            "candidates": leaders,
+        }]
+        game["phase"] = "chief"
+        game["message"] = (
+            "Le village est partagé. Le Chef du village va départager les voix."
+        )
+        return
     if executed is None:
         game["message"] = (
             "Le conseil ne parvient pas à désigner quelqu’un. Personne ne quitte le village aujourd’hui."
@@ -489,6 +582,32 @@ def expire_game_timer(room: dict[str, Any]) -> bool:
             if player.get("alive", True):
                 game["votes"].setdefault(index, None)
         resolve_day_votes(room)
+        return True
+
+    if game["phase"] == "chief":
+        action = current_action(room)
+        if action is not None:
+            game["actions"].pop(game["action_index"])
+        game["action_index"] = 0
+        if action and action["kind"] == "chief_successor":
+            living_indices = [
+                index for index, player in enumerate(room["players"])
+                if player.get("alive", True)
+            ]
+            game["chief_index"] = secrets.choice(living_indices) if living_indices else None
+            if game["chief_index"] is None:
+                game["message"] = "Le village n’a plus de survivant pour devenir Chef."
+            else:
+                successor = room["players"][game["chief_index"]]["name"]
+                game["message"] = (
+                    f"Le Chef n’a pas répondu à temps. {successor} est désigné comme nouveau Chef."
+                )
+        elif action and action["kind"] == "chief_tiebreak":
+            game["message"] = (
+                "Le Chef n’a pas départagé les voix à temps. "
+                "Personne n’est banni du village aujourd’hui."
+            )
+        finish_hunter_chain(room, game["after_hunters"])
         return True
 
     action = current_action(room)
@@ -584,6 +703,7 @@ def add_deaths(room: dict[str, Any], targets: list[int], cause: str) -> None:
     players = room["players"]
     pending = list(dict.fromkeys(targets))
     added_hunters: set[int] = set()
+    chief_successor: dict[str, Any] | None = None
     while pending:
         index = pending.pop(0)
         if not 0 <= index < len(players) or not players[index].get("alive", True):
@@ -591,6 +711,8 @@ def add_deaths(room: dict[str, Any], targets: list[int], cause: str) -> None:
         player = players[index]
         player["alive"] = False
         game["deaths"].append({"name": player["name"], "cause": cause})
+        if index == game["chief_index"]:
+            chief_successor = {"actor_index": index, "kind": "chief_successor"}
         if player["role"] == "chasseur" and index not in added_hunters:
             added_hunters.add(index)
             game["actions"].append({"actor_index": index, "kind": "hunter"})
@@ -599,6 +721,16 @@ def add_deaths(room: dict[str, Any], targets: list[int], cause: str) -> None:
             partner = lovers[1] if lovers[0] == index else lovers[0]
             if players[partner].get("alive", True):
                 pending.append(partner)
+
+    if chief_successor:
+        living_indices = [
+            index for index, player in enumerate(players)
+            if player.get("alive", True)
+        ]
+        if living_indices:
+            game["actions"].insert(0, chief_successor)
+        else:
+            game["chief_index"] = None
 
     game["actions"] = [
         action
@@ -662,7 +794,11 @@ def finish_hunter_chain(room: dict[str, Any], after_hunters: str) -> None:
     game = room["game"]
     game["action_index"] = 0
     if game["actions"]:
-        game["phase"] = "hunter"
+        game["phase"] = (
+            "chief"
+            if current_action(room)["kind"] == "chief_successor"
+            else "hunter"
+        )
         return
 
     game["winners"] = check_winners(room)
@@ -685,10 +821,12 @@ def finish_hunter_chain(room: dict[str, Any], after_hunters: str) -> None:
             "L’aube se lève. Les survivants se rassemblent sur la place : le débat commence, puis chacun votera."
         )
     else:
+        previous_message = game["message"]
         game["round"] += 1
         prepare_night(room)
         game["message"] = (
-            f"Le village s’endort de nouveau. C’est la nuit {game['round']} : que chacun ferme les yeux et garde le silence."
+            f"{previous_message} Le village s’endort de nouveau. C’est la nuit "
+            f"{game['round']} : que chacun ferme les yeux et garde le silence."
         )
 
 
@@ -736,6 +874,7 @@ def public_game_state(room: dict[str, Any]) -> dict[str, Any]:
             if player.get("alive", True)
         ],
         "deaths": game["deaths"],
+        "chief_index": game["chief_index"],
         "current_actor": (
             room["players"][action["actor_index"]]["name"] if action else None
         ),
@@ -797,6 +936,35 @@ def game_action_prompt(
         return None
 
     kind = action["kind"]
+    if kind == "chief_successor":
+        return {
+            "kind": kind,
+            "prompt": (
+                "Chef du village, avant de quitter la place, désigne la personne "
+                "qui te succédera."
+            ),
+            "fields": [
+                select("target", "Successeur du Chef", targets, True)
+            ],
+            "button": "Désigner mon successeur",
+        }
+    if kind == "chief_tiebreak":
+        candidates = [
+            {"value": str(index), "label": players[index]["name"]}
+            for index in action["candidates"]
+            if players[index].get("alive", True) and index != actor_index
+        ]
+        return {
+            "kind": kind,
+            "prompt": (
+                "Les votes sont à égalité. Chef du village, choisis qui sera "
+                "banni parmi les personnes à égalité."
+            ),
+            "fields": [
+                select("target", "Départager les voix", candidates, True)
+            ],
+            "button": "Départager les voix",
+        }
     if kind == "cupidon":
         return {
             "kind": kind,
@@ -946,6 +1114,29 @@ def room_view(room: dict[str, Any], viewer_id: str) -> dict[str, Any]:
 def home():
     return render_template(
         "index.html",
+        start_mode="",
+        minimum_players=MIN_PLAYERS,
+        maximum_players=MAX_PLAYERS,
+        maximum_name_length=MAX_NAME_LENGTH,
+    )
+
+
+@app.get("/local")
+def local_game():
+    return render_template(
+        "local.html",
+        start_mode="local",
+        minimum_players=MIN_PLAYERS,
+        maximum_players=MAX_PLAYERS,
+        maximum_name_length=MAX_NAME_LENGTH,
+    )
+
+
+@app.get("/online")
+def online_game():
+    return render_template(
+        "online.html",
+        start_mode="online",
         minimum_players=MIN_PLAYERS,
         maximum_players=MAX_PLAYERS,
         maximum_name_length=MAX_NAME_LENGTH,
@@ -1327,9 +1518,16 @@ def start_room_route(code: str):
         except ValueError as error:
             return jsonify(error=str(error)), 409
         counts = composition_counts(player_count, composition)
-        roles = composition["special_roles"] + composition["wolf_roles"]
-        roles += ["loup_garou"] * (counts["wolf_count"] - len(composition["wolf_roles"]))
-        roles += ["villageois"] * counts["villager_count"]
+        if "role_counts" in composition:
+            roles = [
+                role
+                for role, count in composition["role_counts"].items()
+                for _ in range(count)
+            ]
+        else:
+            roles = composition["special_roles"] + composition["wolf_roles"]
+            roles += ["loup_garou"] * (counts["wolf_count"] - len(composition["wolf_roles"]))
+            roles += ["villageois"] * counts["villager_count"]
         secrets.SystemRandom().shuffle(roles)
         for player, role in zip(room["players"], roles):
             player["role"] = role
@@ -1401,9 +1599,17 @@ def get_game_state_route(code: str):
             return jsonify(error="La partie n’a pas commencé."), 409
         timer_expired = expire_game_timer(room)
         private_result = room["game"]["private_results"].get(str(actor_index))
+        action = game_action_prompt(room, actor_index)
+        if action:
+            role_id = room["players"][actor_index]["role"]
+            action["actor_index"] = actor_index
+            action["role"] = {
+                "name": ROLE_CARDS[role_id][0],
+                "image": f"/cards/{role_id}",
+            }
         return jsonify({
             "state": public_game_state(room),
-            "action": game_action_prompt(room, actor_index),
+            "action": action,
             "private_result": private_result,
             "timer_expired": timer_expired,
         })
@@ -1416,6 +1622,9 @@ def submit_game_action_route(code: str):
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify(error="La requête n’est pas valide."), 400
+    do_nothing = data.get("do_nothing", False)
+    if not isinstance(do_nothing, bool):
+        return jsonify(error="Le choix d’action n’est pas valide."), 400
 
     with rooms_lock:
         room = rooms.get(room_code)
@@ -1483,32 +1692,85 @@ def submit_game_action_route(code: str):
         try:
             kind = prompt["kind"]
             if kind == "vote":
-                target = target_value("target", required=False)
+                target = None if do_nothing else target_value("target", required=False)
                 game["votes"][actor_index] = target
                 living_count = sum(
                     player.get("alive", True) for player in room["players"]
                 )
                 if len(game["votes"]) == living_count:
                     resolve_day_votes(room)
+            elif kind == "chief_successor":
+                target = None if do_nothing else target_value("target")
+                game["chief_index"] = target
+                game["actions"].pop(game["action_index"])
+                game["action_index"] = 0
+                game["message"] = (
+                    f"{room['players'][target]['name']} devient le nouveau Chef du village."
+                    if target is not None
+                    else "Le village n’a plus de Chef."
+                )
+                finish_hunter_chain(room, game["after_hunters"])
+                if room["mode"] == "online":
+                    room["players"][actor_index]["last_seen"] = time.monotonic()
+                return jsonify({
+                    "state": public_game_state(room),
+                    "action": game_action_prompt(room, actor_index),
+                    "private_result": game["private_results"].get(str(actor_index)),
+                })
+            elif kind == "chief_tiebreak":
+                if do_nothing:
+                    game["actions"] = []
+                    game["action_index"] = 0
+                    game["message"] = (
+                        "Le Chef ne tranche pas. Personne n’est banni du village aujourd’hui."
+                    )
+                    finish_hunter_chain(room, "night")
+                    if room["mode"] == "online":
+                        room["players"][actor_index]["last_seen"] = time.monotonic()
+                    return jsonify({
+                        "state": public_game_state(room),
+                        "action": game_action_prompt(room, actor_index),
+                        "private_result": game["private_results"].get(str(actor_index)),
+                    })
+                target = target_value("target")
+                action = current_action(room)
+                if action is None or target not in action["candidates"]:
+                    raise ValueError("Choisis une personne à égalité dans les votes.")
+                game["actions"] = []
+                game["action_index"] = 0
+                game["message"] = (
+                    f"Le Chef a tranché : {room['players'][target]['name']} est banni du village."
+                )
+                add_deaths(room, [target], "le choix du Chef")
+                finish_hunter_chain(room, "night")
+                if room["mode"] == "online":
+                    room["players"][actor_index]["last_seen"] = time.monotonic()
+                return jsonify({
+                    "state": public_game_state(room),
+                    "action": game_action_prompt(room, actor_index),
+                    "private_result": game["private_results"].get(str(actor_index)),
+                })
             else:
                 action = current_action(room)
                 if action is None or action["actor_index"] != actor_index:
                     return jsonify(error="Ce n’est pas ton tour."), 409
 
                 if kind == "cupidon":
-                    first = target_value("first_target")
-                    second = target_value("second_target")
-                    if first == second:
-                        raise ValueError("Choisis deux joueurs différents.")
-                    game["lovers"] = [first, second]
-                    game["message"] = (
-                        "Un frisson traverse la nuit. Deux destins viennent de se nouer, mais leur secret demeure."
-                    )
+                    if not do_nothing:
+                        first = target_value("first_target")
+                        second = target_value("second_target")
+                        if first == second:
+                            raise ValueError("Choisis deux joueurs différents.")
+                        game["lovers"] = [first, second]
+                        game["message"] = (
+                            "Un frisson traverse la nuit. Deux destins viennent de se nouer, mais leur secret demeure."
+                        )
                 elif kind == "wolf_vote":
-                    target = target_value("target")
-                    if room["players"][target]["role"] in PACK_ROLES:
-                        raise ValueError("La meute ne peut pas choisir l’un des siens.")
-                    game["pack_votes"].append((actor_index, target))
+                    if not do_nothing:
+                        target = target_value("target")
+                        if room["players"][target]["role"] in PACK_ROLES:
+                            raise ValueError("La meute ne peut pas choisir l’un des siens.")
+                        game["pack_votes"].append((actor_index, target))
                 elif kind == "enrage":
                     target = target_value("target", required=False)
                     if target is not None:
@@ -1532,7 +1794,7 @@ def submit_game_action_route(code: str):
                 elif kind == "white_wolf":
                     game["white_wolf_target"] = target_value("target", required=False)
                 elif kind == "witch":
-                    if "save" in data:
+                    if not do_nothing and "save" in data:
                         if game["witch_life_used"]:
                             raise ValueError("La potion de vie a déjà été utilisée.")
                         if game["pack_target"] is None:
@@ -1545,7 +1807,7 @@ def submit_game_action_route(code: str):
                             if save == "yes":
                                 game["witch_save"] = True
                                 game["witch_life_used"] = True
-                    if "kill_target" in data:
+                    if not do_nothing and "kill_target" in data:
                         if game["witch_death_used"]:
                             raise ValueError("La potion de mort a déjà été utilisée.")
                         kill_target = target_value("kill_target", required=False)
@@ -1553,20 +1815,24 @@ def submit_game_action_route(code: str):
                             game["witch_kill_target"] = kill_target
                             game["witch_death_used"] = True
                 elif kind == "seer":
-                    target = target_value("target")
-                    role_id = room["players"][target]["role"]
-                    role_name = ROLE_CARDS[role_id][0]
-                    game["private_results"][str(actor_index)] = (
-                        f"{room['players'][target]['name']} est {role_name}."
-                    )
+                    if not do_nothing:
+                        target = target_value("target")
+                        role_id = room["players"][target]["role"]
+                        role_name = ROLE_CARDS[role_id][0]
+                        game["private_results"][str(actor_index)] = (
+                            f"{room['players'][target]['name']} est {role_name}."
+                        )
                 elif kind == "hunter":
-                    target = target_value("target")
                     game["actions"].pop(0)
                     game["action_index"] = 0
-                    add_deaths(room, [target], "le tir du Chasseur")
-                    game["message"] = (
-                        f"Le Chasseur a éliminé {room['players'][target]['name']}."
-                    )
+                    if do_nothing:
+                        game["message"] = "Le Chasseur choisit de ne pas tirer."
+                    else:
+                        target = target_value("target")
+                        add_deaths(room, [target], "le tir du Chasseur")
+                        game["message"] = (
+                            f"Le Chasseur a éliminé {room['players'][target]['name']}."
+                        )
                     if game["actions"]:
                         game["phase"] = "hunter"
                     else:

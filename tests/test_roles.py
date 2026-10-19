@@ -62,6 +62,32 @@ class CompositionTests(unittest.TestCase):
                 {"special_roles": ["villageois"], "wolf_roles": []}, 6
             )
 
+    def test_custom_role_counts_require_one_role_per_player(self):
+        composition = validate_composition(
+            {
+                "role_counts": {
+                    "voyante": 1,
+                    "sorciere": 1,
+                    "loup_garou": 2,
+                    "villageois": 2,
+                }
+            },
+            6,
+        )
+
+        self.assertEqual(composition["role_counts"]["loup_garou"], 2)
+        self.assertEqual(composition_counts(6, composition)["villager_count"], 2)
+        with self.assertRaisesRegex(ValueError, "exactement"):
+            validate_composition({"role_counts": {"loup_garou": 2}}, 6)
+
+    def test_custom_role_counts_limit_specials_and_require_a_wolf(self):
+        with self.assertRaisesRegex(ValueError, "qu’une fois"):
+            validate_composition(
+                {"role_counts": {"voyante": 2, "loup_garou": 2, "villageois": 2}}, 6
+            )
+        with self.assertRaisesRegex(ValueError, "au moins un Loup-Garou"):
+            validate_composition({"role_counts": {"villageois": 6}}, 6)
+
 
 class PlayerNameTests(unittest.TestCase):
     def test_name_is_trimmed_and_first_character_capitalized(self):
@@ -256,6 +282,33 @@ class RoleRouteTests(unittest.TestCase):
             f"/api/rooms/{created_code}/role?player_index={MIN_PLAYERS}"
         )
         self.assertEqual(invalid_index.status_code, 400)
+
+    def test_local_start_distributes_custom_role_counts(self):
+        created = self.client.post(
+            "/api/rooms",
+            json={"mode": "local", "players": [f"Joueur {index}" for index in range(MIN_PLAYERS)]},
+        )
+        code = created.get_json()["code"]
+        composition = self.client.post(
+            f"/api/rooms/{code}/composition",
+            json={
+                "role_counts": {
+                    "voyante": 1,
+                    "sorciere": 1,
+                    "loup_garou": 2,
+                    "villageois": 2,
+                }
+            },
+        )
+        self.assertEqual(composition.status_code, 200)
+
+        started = self.client.post(f"/api/rooms/{code}/start", json={})
+
+        self.assertEqual(started.status_code, 200)
+        with rooms_lock:
+            assigned = [player["role"] for player in rooms[code]["players"]]
+        for role, count in {"voyante": 1, "sorciere": 1, "loup_garou": 2, "villageois": 2}.items():
+            self.assertEqual(assigned.count(role), count)
 
 
 if __name__ == "__main__":

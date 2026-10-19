@@ -11,6 +11,7 @@ Les pseudos des joueurs sont limités à 10 caractères et commencent par une ma
 - **Sorcière** : connaît la victime choisie par la meute. Elle possède une potion de vie et une potion de mort, chacune utilisable une fois. La potion de vie ne peut être utilisée que si la meute a choisi une victime. Elle peut se sauver et utiliser les deux potions la même nuit.
 - **Cupidon** : la première nuit, choisit deux joueurs différents. Si l'un meurt, l'autre meurt aussi. Si les amoureux sont de camps différents, ils gagnent ensemble s'ils sont les deux derniers survivants ; sinon, ils gardent leur victoire de camp.
 - **Chasseur** : à sa mort, quelle qu'en soit la cause, choisit un joueur vivant à éliminer. Le lien amoureux et le pouvoir du Chasseur peuvent entraîner d'autres morts en chaîne.
+- **Chef du village** : un joueur vivant est désigné au hasard au début de la partie. En cas d'égalité au vote du village, il choisit parmi les joueurs à égalité. S'il meurt, il désigne son successeur avant de quitter la partie ; si le délai expire, un survivant est choisi au hasard.
 
 ## Meute et indépendants
 
@@ -29,7 +30,7 @@ La meute gagne lorsque tous les survivants sont des Loups-Garous ou des Loups En
 5. La Sorcière voit la victime de la meute et choisit ses potions.
 6. La Voyante découvre un rôle.
 7. Les morts sont appliquées, puis le pouvoir du Chasseur et les morts d'amoureux sont résolus.
-8. Si la partie continue, le village vote le jour. Une égalité de votes ne mène à aucune élimination.
+8. Si la partie continue, le village vote le jour. En cas d'égalité, le Chef départage les voix ; s'il n'agit pas à temps, personne n'est éliminé. S'il meurt, il choisit son successeur avant la suite de la partie.
 
 Le maître du jeu accompagne la partie avec une narration lors des transitions, des votes et des résultats. Les consignes d'action sont adressées au joueur concerné. Les rôles, visions, conversions et décisions de potion restent privés tant qu'ils ne sont pas révélés par les règles.
 
