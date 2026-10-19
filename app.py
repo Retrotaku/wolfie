@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import string
@@ -7,14 +8,24 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, send_from_directory, session
+
+load_dotenv(Path(__file__).parent / ".env")
 
 MIN_PLAYERS = 6
 MAX_PLAYERS = 14
+MAX_NAME_LENGTH = 10
 ROOM_CODE_LENGTH = 6
 ROOM_CODE_CHARACTERS = string.ascii_uppercase + string.digits
 PRESENCE_TIMEOUT_SECONDS = 10
+NIGHT_ACTION_SECONDS = 3 * 60
+DAY_ACTION_SECONDS = 5 * 60
+SPECIAL_ACTION_SECONDS = 60
 MAIN_SPECIAL_ROLES = {"voyante", "sorciere", "cupidon", "chasseur"}
 MAIN_WOLF_VARIANTS = {"loup_enrage", "loup_blanc"}
 MAIN_ROLE_IDS = {
@@ -46,7 +57,7 @@ SPECIAL_ROLES = MAIN_SPECIAL_ROLES
 WOLF_VARIANTS = MAIN_WOLF_VARIANTS
 ROLE_CARDS = {
     "voyante": ("Voyante", "Voyante.jpeg", "Ton regard perce les secrets de la nuit."),
-    "sorciere": ("Sorcière", "Sorciere.jpeg", "Tu possèdes une potion de vie et une potion de mort, chacune utilisable une fois. Tu connais la victime de la meute, peux te sauver et utiliser les deux potions la même nuit."),
+    "sorciere": ("Sorcière", "Sorciere.jpeg", "Tu possèdes une potion de vie et une potion de mort, chacune utilisable une fois. Tu connais la victime de la meute ; tu ne peux utiliser la potion de vie que si la meute a choisi une victime. Tu peux te sauver et utiliser les deux potions la même nuit."),
     "cupidon": ("Cupidon", "Cupidon.jpeg", "La première nuit, lie deux joueurs. Si l’un meurt, l’autre meurt aussi. Si les amoureux sont de camps différents, ils gagnent ensemble s’ils sont les deux derniers survivants."),
     "chasseur": ("Chasseur", "Chasseur.jpeg", "À ta mort, quelle qu’en soit la cause, tu peux éliminer un joueur vivant."),
     "loup_garou": ("Loup-Garou", "Loup_Garou.jpeg", "Chaque nuit, vote avec la meute pour éliminer un joueur. La meute gagne quand seuls des Loups-Garous et des Loups Enragés restent en vie."),
@@ -86,14 +97,172 @@ app.config["PREFERRED_URL_SCHEME"] = os.environ.get("PREFERRED_URL_SCHEME", "htt
 
 rooms: dict[str, dict[str, Any]] = {}
 rooms_lock = threading.Lock()
+account_sessions: dict[str, dict[str, Any]] = {}
+account_sessions_lock = threading.Lock()
+
+
+class SupabaseError(Exception):
+    def __init__(self, message: str, status_code: int = 502):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def supabase_configuration() -> tuple[str, str]:
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon_key = os.environ.get("SUPABASE_ANON_KEY", "")
+    if not supabase_url or not anon_key:
+        raise SupabaseError(
+            "Les comptes ne sont pas configurés. Ajoute SUPABASE_URL et SUPABASE_ANON_KEY.",
+            503,
+        )
+    return supabase_url, anon_key
+
+
+def supabase_request(
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    access_token: str | None = None,
+    prefer: str | None = None,
+) -> Any:
+    supabase_url, anon_key = supabase_configuration()
+    headers = {
+        "apikey": anon_key,
+        "Authorization": f"Bearer {access_token or anon_key}",
+        "Accept": "application/json",
+    }
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+    if prefer:
+        headers["Prefer"] = prefer
+
+    api_request = Request(
+        f"{supabase_url}{path}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urlopen(api_request, timeout=10) as response:
+            response_body = response.read()
+            if not response_body:
+                return None
+            return json.loads(response_body)
+    except HTTPError as error:
+        response_body = error.read()
+        try:
+            details = json.loads(response_body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            details = {}
+        message = (
+            details.get("msg")
+            or details.get("message")
+            or details.get("error_description")
+            or details.get("error")
+            or "Le service de comptes a refusé la requête."
+        )
+        raise SupabaseError(str(message), error.code) from error
+    except (URLError, TimeoutError) as error:
+        raise SupabaseError(
+            "Le service de comptes est momentanément inaccessible.", 503
+        ) from error
+    except json.JSONDecodeError as error:
+        raise SupabaseError(
+            "Le service de comptes a renvoyé une réponse illisible.", 502
+        ) from error
+
+
+def store_account_session(auth_response: dict[str, Any]) -> dict[str, Any]:
+    user = auth_response.get("user")
+    access_token = auth_response.get("access_token")
+    refresh_token = auth_response.get("refresh_token")
+    if not isinstance(user, dict) or not user.get("id") or not access_token:
+        raise SupabaseError("La réponse de connexion Supabase est incomplète.")
+
+    session_id = secrets.token_urlsafe(32)
+    account = {
+        "id": user["id"],
+        "email": user.get("email", ""),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at": time.time() + int(auth_response.get("expires_in", 3600)),
+    }
+    old_session_id = session.get("account_session_id")
+    if old_session_id:
+        with account_sessions_lock:
+            account_sessions.pop(old_session_id, None)
+            account_sessions[session_id] = account
+    else:
+        with account_sessions_lock:
+            account_sessions[session_id] = account
+    session["account_session_id"] = session_id
+    return account
+
+
+def current_account_session() -> dict[str, Any]:
+    session_id = session.get("account_session_id")
+    if not session_id:
+        raise SupabaseError("Connecte-toi pour accéder à ton profil.", 401)
+    with account_sessions_lock:
+        account = account_sessions.get(session_id)
+    if account is None:
+        session.pop("account_session_id", None)
+        raise SupabaseError(
+            "Ta session a expiré. Connecte-toi de nouveau.", 401
+        )
+
+    if account["expires_at"] <= time.time() + 60:
+        refresh_token = account.get("refresh_token")
+        if not refresh_token:
+            with account_sessions_lock:
+                account_sessions.pop(session_id, None)
+            session.pop("account_session_id", None)
+            raise SupabaseError(
+                "Ta session a expiré. Connecte-toi de nouveau.", 401
+            )
+        refreshed = supabase_request(
+            "/auth/v1/token?grant_type=refresh_token",
+            method="POST",
+            payload={"refresh_token": refresh_token},
+        )
+        refreshed_user = refreshed.get("user", {})
+        account.update(
+            access_token=refreshed.get("access_token"),
+            refresh_token=refreshed.get("refresh_token", refresh_token),
+            expires_at=time.time() + int(refreshed.get("expires_in", 3600)),
+            email=refreshed_user.get("email", account["email"]),
+        )
+        with account_sessions_lock:
+            account_sessions[session_id] = account
+    return account
+
+
+def fetch_account_profile(account: dict[str, Any]) -> dict[str, Any]:
+    query = quote(f"id=eq.{account['id']}&select=id,display_name,bio", safe="=&,")
+    result = supabase_request(
+        f"/rest/v1/profiles?{query}",
+        access_token=account["access_token"],
+    )
+    if not isinstance(result, list) or not result:
+        raise SupabaseError(
+            "Profil introuvable. Vérifie que la table profiles et son déclencheur Supabase sont installés.",
+            409,
+        )
+    return result[0]
 
 
 def clean_name(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("Entre un prénom ou un pseudonyme.")
     name = " ".join(value.split())
-    if not name or len(name) > 24:
-        raise ValueError("Le nom doit contenir entre 1 et 24 caractères.")
+    if not name:
+        raise ValueError("Le pseudo ne peut pas être vide.")
+    name = name[0].upper() + name[1:]
+    if len(name) > MAX_NAME_LENGTH:
+        raise ValueError(f"Le pseudo ne peut pas dépasser {MAX_NAME_LENGTH} caractères.")
     return name
 
 
@@ -230,7 +399,11 @@ def initialize_game(room: dict[str, Any], *, dealing: bool = False) -> None:
         "deaths": [],
         "votes": {},
         "winners": [],
-        "message": "La première nuit commence.",
+        "message": (
+            "Les rôles sont distribués. Gardez votre carte secrète et attendez le début de la partie."
+            if dealing
+            else "Le village s’endort. Que chacun ferme les yeux : le maître du jeu appelle les rôles dans le silence de la nuit."
+        ),
         "private_results": {},
         "after_hunters": "day",
     }
@@ -243,6 +416,108 @@ def current_action(room: dict[str, Any]) -> dict[str, Any] | None:
     actions = game["actions"]
     index = game["action_index"]
     return actions[index] if index < len(actions) else None
+
+
+def ensure_game_timer(room: dict[str, Any]) -> dict[str, Any] | None:
+    game = room.get("game")
+    if not game or game["phase"] in {"dealing", "finished"}:
+        return None
+
+    action = current_action(room)
+    if game["phase"] == "day":
+        timer_key = f"day:{game['round']}"
+        duration = DAY_ACTION_SECONDS
+    else:
+        action_key = (
+            f"{action['actor_index']}:{action['kind']}" if action else "pending"
+        )
+        timer_key = f"{game['phase']}:{game['round']}:{game['action_index']}:{action_key}"
+        duration = (
+            NIGHT_ACTION_SECONDS
+            if action and action["kind"] == "wolf_vote"
+            else SPECIAL_ACTION_SECONDS
+        )
+
+    if game.get("timer_key") != timer_key:
+        game["timer_key"] = timer_key
+        game["timer_deadline"] = time.time() + duration
+        game["timer_duration"] = duration
+
+    return {
+        "id": timer_key,
+        "deadline": game["timer_deadline"],
+        "duration": game["timer_duration"],
+    }
+
+
+def resolve_day_votes(room: dict[str, Any]) -> None:
+    game = room["game"]
+    tallies: dict[int, int] = {}
+    for vote in game["votes"].values():
+        if vote is not None:
+            tallies[vote] = tallies.get(vote, 0) + 1
+    if tallies:
+        highest = max(tallies.values())
+        leaders = [index for index, count in tallies.items() if count == highest]
+        executed = leaders[0] if len(leaders) == 1 else None
+    else:
+        executed = None
+    game["actions"] = []
+    game["action_index"] = 0
+    game["after_hunters"] = "night"
+    if executed is None:
+        game["message"] = (
+            "Le conseil ne parvient pas à désigner quelqu’un. Personne ne quitte le village aujourd’hui."
+        )
+    else:
+        game["message"] = (
+            f"Le verdict est rendu : {room['players'][executed]['name']} est banni du village."
+        )
+        add_deaths(room, [executed], "le vote du village")
+    finish_hunter_chain(room, "night")
+
+
+def expire_game_timer(room: dict[str, Any]) -> bool:
+    game = room.get("game")
+    timer = ensure_game_timer(room)
+    if timer is None or time.time() < timer["deadline"]:
+        return False
+
+    game["timer_key"] = None
+    if game["phase"] == "day":
+        for index, player in enumerate(room["players"]):
+            if player.get("alive", True):
+                game["votes"].setdefault(index, None)
+        resolve_day_votes(room)
+        return True
+
+    action = current_action(room)
+    if game["phase"] == "hunter":
+        if action is not None:
+            game["actions"].pop(game["action_index"])
+        finish_hunter_chain(room, game["after_hunters"])
+        return True
+
+    if action is None:
+        resolve_night(room)
+        return True
+
+    kind = action["kind"]
+    game["action_index"] += 1
+    next_action = current_action(room)
+    if kind == "wolf_vote" and (
+        next_action is None or next_action["kind"] != "wolf_vote"
+    ):
+        tallies: dict[int, int] = {}
+        for _, vote in game["pack_votes"]:
+            tallies[vote] = tallies.get(vote, 0) + 1
+        if tallies:
+            highest = max(tallies.values())
+            leaders = [index for index, count in tallies.items() if count == highest]
+            game["pack_target"] = leaders[0] if len(leaders) == 1 else None
+    if game["action_index"] >= len(game["actions"]):
+        resolve_night(room)
+    return True
 
 
 def prepare_night(room: dict[str, Any]) -> None:
@@ -325,6 +600,17 @@ def add_deaths(room: dict[str, Any], targets: list[int], cause: str) -> None:
             if players[partner].get("alive", True):
                 pending.append(partner)
 
+    game["actions"] = [
+        action
+        for action in game["actions"]
+        if action["kind"] != "hunter"
+        or any(
+            player.get("alive", True)
+            for target_index, player in enumerate(players)
+            if target_index != action["actor_index"]
+        )
+    ]
+
 
 def check_winners(room: dict[str, Any]) -> list[str]:
     players = room["players"]
@@ -382,15 +668,28 @@ def finish_hunter_chain(room: dict[str, Any], after_hunters: str) -> None:
     game["winners"] = check_winners(room)
     if game["winners"]:
         game["phase"] = "finished"
-        game["message"] = "La partie est terminée."
+        winner_names = {
+            "village": "le village",
+            "meute": "la meute",
+            "loup_blanc": "le Loup Blanc",
+            "amoureux": "les amoureux",
+        }
+        winners = " et ".join(winner_names[winner] for winner in game["winners"])
+        game["message"] = (
+            f"Le silence retombe sur le village. La partie est terminée : {winners} remporte la victoire."
+        )
     elif after_hunters == "day":
         game["phase"] = "day"
         game["votes"] = {}
-        game["message"] = "Le village débat puis vote."
+        game["message"] = (
+            "L’aube se lève. Les survivants se rassemblent sur la place : le débat commence, puis chacun votera."
+        )
     else:
         game["round"] += 1
         prepare_night(room)
-        game["message"] = f"La nuit {game['round']} commence."
+        game["message"] = (
+            f"Le village s’endort de nouveau. C’est la nuit {game['round']} : que chacun ferme les yeux et garde le silence."
+        )
 
 
 def resolve_night(room: dict[str, Any]) -> None:
@@ -408,17 +707,24 @@ def resolve_night(room: dict[str, Any]) -> None:
     game["after_hunters"] = "day"
     previous_death_count = len(game["deaths"])
     add_deaths(room, deaths, "la nuit")
-    game["message"] = (
-        "Le village se réveille après une nuit meurtrière."
-        if len(game["deaths"]) > previous_death_count
-        else "Le village se réveille : personne n’a été éliminé cette nuit."
-    )
+    night_deaths = game["deaths"][previous_death_count:]
+    if night_deaths:
+        missing_names = ", ".join(death["name"] for death in night_deaths)
+        game["message"] = (
+            f"Le jour se lève. En faisant l’appel, le village découvre que {missing_names} "
+            f"{'manque' if len(night_deaths) == 1 else 'manquent'} à l’appel."
+        )
+    else:
+        game["message"] = (
+            "Le jour se lève. Tout le monde est encore là ; personne n’a été éliminé cette nuit."
+        )
     finish_hunter_chain(room, "day")
 
 
 def public_game_state(room: dict[str, Any]) -> dict[str, Any]:
     game = room["game"]
     action = current_action(room)
+    timer = ensure_game_timer(room)
     return {
         "phase": game["phase"],
         "round": game["round"],
@@ -438,6 +744,15 @@ def public_game_state(room: dict[str, Any]) -> dict[str, Any]:
         "vote_total": sum(player.get("alive", True) for player in room["players"]),
         "winners": game["winners"],
         "message": game["message"],
+        "timer": (
+            {
+                "id": timer["id"],
+                "deadline": timer["deadline"],
+                "duration": timer["duration"],
+            }
+            if timer
+            else None
+        ),
     }
 
 
@@ -467,7 +782,7 @@ def game_action_prompt(
             return None
         return {
             "kind": "vote",
-            "prompt": "Choisis qui éliminer, ou abstiens-toi.",
+            "prompt": "Habitants, le débat est clos. Choisis la personne que tu souhaites voir bannie, ou abstiens-toi.",
             "fields": [
                 select(
                     "target",
@@ -485,7 +800,7 @@ def game_action_prompt(
     if kind == "cupidon":
         return {
             "kind": kind,
-            "prompt": "Première nuit : lie deux joueurs amoureux.",
+            "prompt": "Cupidon, approche. Avant que la nuit ne s’achève, désigne deux cœurs qui seront désormais liés.",
             "fields": [
                 select("first_target", "Premier amoureux", targets, True),
                 select("second_target", "Deuxième amoureux", targets, True),
@@ -500,7 +815,7 @@ def game_action_prompt(
         ]
         return {
             "kind": kind,
-            "prompt": "La meute choisit sa victime.",
+            "prompt": "Loups, ouvrez les yeux en silence. Mettez-vous d’accord et désignez votre victime.",
             "fields": [select("target", "Victime de la meute", options, True)],
             "button": "Voter pour la victime",
         }
@@ -512,14 +827,14 @@ def game_action_prompt(
         ]
         return {
             "kind": kind,
-            "prompt": "Tu peux convertir une fois un joueur vivant en Loup-Garou ordinaire. Il perd son ancien rôle.",
+            "prompt": "Loup Enragé, le sang ancien t’appelle. Tu peux convertir une fois un joueur vivant en Loup-Garou ordinaire, ou laisser passer ton pouvoir.",
             "fields": [select("target", "Joueur à convertir", options, False)],
             "button": "Valider",
         }
     if kind == "white_wolf":
         return {
             "kind": kind,
-            "prompt": "Cette nuit, tu peux éliminer un joueur de ton choix.",
+            "prompt": "Loup Blanc, à toi de chasser cette nuit. Choisis une cible ou reste dans l’ombre.",
             "fields": [
                 select(
                     "target",
@@ -538,7 +853,7 @@ def game_action_prompt(
         ]
         kill_options = [{"value": "", "label": "Ne pas utiliser la potion"}] + targets
         fields = []
-        if not game["witch_life_used"]:
+        if not game["witch_life_used"] and pack_target is not None:
             fields.append(
                 select("save", "Sauver la victime de la meute ?", save_options, True)
             )
@@ -553,21 +868,21 @@ def game_action_prompt(
         )
         return {
             "kind": kind,
-            "prompt": f"La victime de la meute est : {victim}. Tu peux utiliser chacune de tes potions une seule fois.",
+            "prompt": f"Sorcière, réveille-toi. La victime de la meute est : {victim}. Décide si tu veux employer tes potions ; chacune ne peut servir qu’une seule fois.",
             "fields": fields,
             "button": "Utiliser / conserver mes potions",
         }
     if kind == "seer":
         return {
             "kind": kind,
-            "prompt": "Découvre le rôle d'un joueur vivant.",
+            "prompt": "Voyante, ouvre les yeux. Choisis un joueur vivant et découvre son véritable rôle.",
             "fields": [select("target", "Joueur à sonder", targets, True)],
             "button": "Découvrir son rôle",
         }
     if kind == "hunter":
         return {
             "kind": kind,
-            "prompt": "Tu es mort, mais ton dernier geste de Chasseur peut éliminer un joueur vivant.",
+            "prompt": "Chasseur, ton aventure s’achève, mais ton dernier geste peut encore changer le destin du village. Choisis un joueur vivant à éliminer.",
             "fields": [select("target", "Joueur à éliminer", targets, True)],
             "button": "Tirer",
         }
@@ -630,8 +945,149 @@ def room_view(room: dict[str, Any], viewer_id: str) -> dict[str, Any]:
 @app.get("/")
 def home():
     return render_template(
-        "index.html", minimum_players=MIN_PLAYERS, maximum_players=MAX_PLAYERS
+        "index.html",
+        minimum_players=MIN_PLAYERS,
+        maximum_players=MAX_PLAYERS,
+        maximum_name_length=MAX_NAME_LENGTH,
     )
+
+
+@app.post("/api/account/signup")
+def account_signup_route():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="La requête d’inscription n’est pas valide."), 400
+
+    email = data.get("email")
+    password = data.get("password")
+    try:
+        display_name = clean_name(data.get("display_name"))
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    if not isinstance(email, str) or "@" not in email or any(
+        character.isspace() for character in email
+    ):
+        return jsonify(error="Entre une adresse e-mail valide."), 400
+    if not isinstance(password, str) or len(password) < 8:
+        return jsonify(error="Le mot de passe doit contenir au moins 8 caractères."), 400
+
+    try:
+        result = supabase_request(
+            "/auth/v1/signup",
+            method="POST",
+            payload={
+                "email": email.strip().lower(),
+                "password": password,
+                "data": {"display_name": display_name},
+            },
+        )
+        if not isinstance(result, dict):
+            raise SupabaseError("La réponse d’inscription Supabase est illisible.")
+        if not isinstance(result.get("user"), dict) and result.get("id"):
+            result = {
+                **result,
+                "user": {"id": result["id"], "email": result.get("email", "")},
+            }
+        if not result.get("access_token"):
+            return jsonify(
+                requires_confirmation=True,
+                message="Compte créé. Vérifie ta boîte mail pour confirmer ton adresse avant de te connecter.",
+            ), 201
+        account = store_account_session(result)
+        profile = fetch_account_profile(account)
+        return jsonify(
+            account={"email": account["email"], "profile": profile}
+        ), 201
+    except SupabaseError as error:
+        return jsonify(error=str(error)), error.status_code
+
+
+@app.post("/api/account/login")
+def account_login_route():
+    data = request.get_json(silent=True)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("email"), str)
+        or not isinstance(data.get("password"), str)
+    ):
+        return jsonify(error="Entre ton adresse e-mail et ton mot de passe."), 400
+    try:
+        result = supabase_request(
+            "/auth/v1/token?grant_type=password",
+            method="POST",
+            payload={
+                "email": data["email"].strip().lower(),
+                "password": data["password"],
+            },
+        )
+        if not isinstance(result, dict):
+            raise SupabaseError("La réponse de connexion Supabase est illisible.")
+        account = store_account_session(result)
+        profile = fetch_account_profile(account)
+        return jsonify(account={"email": account["email"], "profile": profile})
+    except SupabaseError as error:
+        status_code = 401 if error.status_code in {400, 401, 422} else error.status_code
+        message = (
+            "Adresse e-mail ou mot de passe incorrect."
+            if status_code == 401
+            else str(error)
+        )
+        return jsonify(error=message), status_code
+
+
+@app.get("/api/account/profile")
+def account_profile_route():
+    try:
+        account = current_account_session()
+        profile = fetch_account_profile(account)
+        return jsonify(account={"email": account["email"], "profile": profile})
+    except SupabaseError as error:
+        return jsonify(error=str(error)), error.status_code
+
+
+@app.patch("/api/account/profile")
+def update_account_profile_route():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="Les informations du profil ne sont pas valides."), 400
+    try:
+        account = current_account_session()
+        display_name = clean_name(data.get("display_name"))
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except SupabaseError as error:
+        return jsonify(error=str(error)), error.status_code
+
+    bio = data.get("bio")
+    if not isinstance(bio, str):
+        return jsonify(error="La bio doit être du texte."), 400
+    bio = bio.strip()
+    if len(bio) > 280:
+        return jsonify(error="La bio ne peut pas dépasser 280 caractères."), 400
+
+    query = quote(f"id=eq.{account['id']}", safe="=&,")
+    try:
+        result = supabase_request(
+            f"/rest/v1/profiles?{query}",
+            method="PATCH",
+            payload={"display_name": display_name, "bio": bio},
+            access_token=account["access_token"],
+            prefer="return=representation",
+        )
+        if not isinstance(result, list) or not result:
+            raise SupabaseError("Le profil n’a pas pu être modifié.", 409)
+        return jsonify(account={"email": account["email"], "profile": result[0]})
+    except SupabaseError as error:
+        return jsonify(error=str(error)), error.status_code
+
+
+@app.post("/api/account/logout")
+def account_logout_route():
+    session_id = session.pop("account_session_id", None)
+    if session_id:
+        with account_sessions_lock:
+            account_sessions.pop(session_id, None)
+    return jsonify(success=True)
 
 
 @app.get("/cards/<role_id>")
@@ -943,11 +1399,13 @@ def get_game_state_route(code: str):
 
         if room["game"] is None:
             return jsonify(error="La partie n’a pas commencé."), 409
+        timer_expired = expire_game_timer(room)
         private_result = room["game"]["private_results"].get(str(actor_index))
         return jsonify({
             "state": public_game_state(room),
             "action": game_action_prompt(room, actor_index),
             "private_result": private_result,
+            "timer_expired": timer_expired,
         })
 
 
@@ -990,6 +1448,14 @@ def submit_game_action_route(code: str):
         if not room["started"] or game is None or game["phase"] in {"dealing", "finished"}:
             return jsonify(error="Aucune action n’est attendue actuellement."), 409
 
+        if expire_game_timer(room):
+            return jsonify({
+                "state": public_game_state(room),
+                "action": game_action_prompt(room, actor_index),
+                "private_result": game["private_results"].get(str(actor_index)),
+                "timer_expired": True,
+            })
+        ensure_game_timer(room)
         prompt = game_action_prompt(room, actor_index)
         if prompt is None:
             return jsonify(error="Ce n’est pas ton tour ou tu as déjà agi."), 409
@@ -1023,30 +1489,7 @@ def submit_game_action_route(code: str):
                     player.get("alive", True) for player in room["players"]
                 )
                 if len(game["votes"]) == living_count:
-                    tallies: dict[int, int] = {}
-                    for vote in game["votes"].values():
-                        if vote is not None:
-                            tallies[vote] = tallies.get(vote, 0) + 1
-                    if tallies:
-                        highest = max(tallies.values())
-                        leaders = [
-                            index for index, count in tallies.items()
-                            if count == highest
-                        ]
-                        executed = leaders[0] if len(leaders) == 1 else None
-                    else:
-                        executed = None
-                    game["actions"] = []
-                    game["action_index"] = 0
-                    game["after_hunters"] = "night"
-                    if executed is None:
-                        game["message"] = "Le vote est terminé sans élimination (égalité ou abstentions)."
-                    else:
-                        game["message"] = (
-                            f"{room['players'][executed]['name']} est éliminé par le village."
-                        )
-                        add_deaths(room, [executed], "le vote du village")
-                    finish_hunter_chain(room, "night")
+                    resolve_day_votes(room)
             else:
                 action = current_action(room)
                 if action is None or action["actor_index"] != actor_index:
@@ -1058,7 +1501,9 @@ def submit_game_action_route(code: str):
                     if first == second:
                         raise ValueError("Choisis deux joueurs différents.")
                     game["lovers"] = [first, second]
-                    game["message"] = "Cupidon a lié deux joueurs."
+                    game["message"] = (
+                        "Un frisson traverse la nuit. Deux destins viennent de se nouer, mais leur secret demeure."
+                    )
                 elif kind == "wolf_vote":
                     target = target_value("target")
                     if room["players"][target]["role"] in PACK_ROLES:
@@ -1087,14 +1532,22 @@ def submit_game_action_route(code: str):
                 elif kind == "white_wolf":
                     game["white_wolf_target"] = target_value("target", required=False)
                 elif kind == "witch":
-                    if not game["witch_life_used"]:
-                        save = data.get("save", "no")
-                        if save not in {"yes", "no"}:
-                            raise ValueError("Le choix de la potion de vie n’est pas valide.")
-                        if save == "yes":
-                            game["witch_save"] = True
-                            game["witch_life_used"] = True
-                    if not game["witch_death_used"]:
+                    if "save" in data:
+                        if game["witch_life_used"]:
+                            raise ValueError("La potion de vie a déjà été utilisée.")
+                        if game["pack_target"] is None:
+                            if data["save"] == "yes":
+                                raise ValueError("Il n’y a aucune victime de la meute à sauver.")
+                        else:
+                            save = data["save"]
+                            if save not in {"yes", "no"}:
+                                raise ValueError("Le choix de la potion de vie n’est pas valide.")
+                            if save == "yes":
+                                game["witch_save"] = True
+                                game["witch_life_used"] = True
+                    if "kill_target" in data:
+                        if game["witch_death_used"]:
+                            raise ValueError("La potion de mort a déjà été utilisée.")
                         kill_target = target_value("kill_target", required=False)
                         if kill_target is not None:
                             game["witch_kill_target"] = kill_target

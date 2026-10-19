@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#101010">
     <title>Wolfie — Le village s’endort</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='22') }}">
-    <script src="{{ url_for('static', filename='app.js', v='22') }}" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='30') }}">
+    <script src="{{ url_for('static', filename='app.js', v='30') }}" defer></script>
   </head>
   <body>
     <div class="moon moon-one" aria-hidden="true"></div>
@@ -16,7 +16,10 @@
         <span class="brand-mark" aria-hidden="true">W</span>
         <span>WOLFIE</span>
       </a>
-      <span class="topbar-note"><span class="live-dot"></span> LE VILLAGE EST À TOI</span>
+      <div class="topbar-actions">
+        <span class="topbar-note"><span class="live-dot"></span> LE VILLAGE EST À TOI</span>
+        <button class="back-button account-toggle" id="account-toggle" type="button">Mon compte</button>
+      </div>
     </header>
 
     <main data-minimum-players="{{ minimum_players }}" data-maximum-players="{{ maximum_players }}">
@@ -25,6 +28,38 @@
         <h1>Le village<br><span>s’endort.</span></h1>
         <p class="hero-copy">Rassemble tes amis autour d’un écran ou retrouve-les dans un salon en ligne. Wolfie commence ici.</p>
         <div class="minimum-note"><span aria-hidden="true">✦</span> De {{ minimum_players }} à {{ maximum_players }} joueurs</div>
+      </section>
+
+      <section class="account-panel" id="account-panel" hidden aria-labelledby="account-title">
+        <div class="account-heading">
+          <div>
+            <p class="eyebrow">TON ESPACE PERSONNEL</p>
+            <h2 id="account-title">Compte joueur</h2>
+          </div>
+          <button class="back-button" id="account-close" type="button">Fermer</button>
+        </div>
+        <form id="account-auth-form">
+          <label for="account-email">Adresse e-mail</label>
+          <input id="account-email" name="email" type="email" autocomplete="email" required>
+          <label for="account-password">Mot de passe</label>
+          <input id="account-password" name="password" type="password" minlength="8" autocomplete="current-password" required>
+          <div id="account-signup-fields" hidden>
+            <label for="account-display-name">Pseudo (10 caractères maximum)</label>
+            <input id="account-display-name" name="display_name" type="text" maxlength="{{ maximum_name_length }}" autocomplete="nickname">
+          </div>
+          <button class="primary-button" id="account-auth-submit" type="submit">Se connecter <span>↗</span></button>
+        </form>
+        <button class="account-link" id="account-switch-mode" type="button">Créer un compte</button>
+        <form id="account-profile-form" hidden>
+          <p class="account-email" id="account-profile-email"></p>
+          <label for="account-profile-name">Pseudo du profil</label>
+          <input id="account-profile-name" name="display_name" type="text" maxlength="{{ maximum_name_length }}" required>
+          <label for="account-profile-bio">Bio</label>
+          <textarea id="account-profile-bio" name="bio" maxlength="280" rows="4" placeholder="Quelques mots sur toi (facultatif)"></textarea>
+          <button class="primary-button" type="submit">Enregistrer le profil <span>↗</span></button>
+          <button class="secondary-button account-logout" id="account-logout" type="button">Se déconnecter</button>
+        </form>
+        <p class="account-status" id="account-status" role="status"></p>
       </section>
 
       <div class="room-workspace" id="room-workspace">
@@ -66,7 +101,7 @@
                 <button class="back-button player-name-back" id="player-name-back" type="button">← Retour aux joueurs</button>
                 <h3 id="player-name-title">Saisis ton pseudo pour dévoiler ton rôle</h3>
                 <label class="visually-hidden" for="player-name-input">Pseudo du joueur</label>
-                <input id="player-name-input" type="text" maxlength="24" placeholder="Ton pseudo" autocomplete="off">
+                <input id="player-name-input" type="text" maxlength="{{ maximum_name_length }}" placeholder="Ton pseudo (10 caractères max.)" autocomplete="off">
                 <button class="primary-button" id="save-player-name" type="submit">Valider le pseudo <span>↗</span></button>
               </section>
             </form>
@@ -78,13 +113,13 @@
             <p>Crée un salon et partage son code, ou rejoins celui de tes amis.</p>
             <form id="create-online-form" class="online-create-form">
               <label for="host-name">Ton nom</label>
-              <input id="host-name" name="name" maxlength="24" placeholder="Comment t’appelles-tu ?" required>
+              <input id="host-name" name="name" maxlength="{{ maximum_name_length }}" placeholder="Ton pseudo (10 caractères max.)" required>
               <button class="primary-button" type="submit">Créer un salon <span>↗</span></button>
             </form>
             <div class="form-divider"><span>OU REJOINDRE UN SALON</span></div>
             <form id="join-form" class="join-form">
               <label for="join-name">Ton nom</label>
-              <input id="join-name" name="name" maxlength="24" placeholder="Ton nom dans la partie" required>
+              <input id="join-name" name="name" maxlength="{{ maximum_name_length }}" placeholder="Ton pseudo (10 caractères max.)" required>
               <label for="room-code">Code du salon</label>
               <input id="room-code" name="code" maxlength="6" placeholder="EX. A7K2QF" autocomplete="off" required>
               <button class="secondary-button" type="submit">Rejoindre <span>→</span></button>
@@ -147,7 +182,7 @@
               <h3 id="next-player-title">Saisis ton pseudo pour dévoiler ton rôle</h3>
               <form id="next-player-form">
                 <label class="visually-hidden" for="next-player-name">Pseudo du joueur</label>
-                <input id="next-player-name" type="text" maxlength="24" placeholder="Ton pseudo" autocomplete="off" required>
+                <input id="next-player-name" type="text" maxlength="{{ maximum_name_length }}" placeholder="Ton pseudo (10 caractères max.)" autocomplete="off" required>
                 <button class="primary-button" type="submit">Valider le pseudo <span>↗</span></button>
               </form>
             </section>
@@ -179,11 +214,16 @@
             </section>
             <p class="deal-status" id="deal-status" role="status"></p>
           </div>
-          <section class="game-panel" id="game-panel" hidden aria-live="polite">
+          <section class="game-panel" id="game-panel" hidden>
             <p class="eyebrow" id="game-round">NUIT 1</p>
             <h3 id="game-phase-title">La nuit tombe</h3>
+            <p class="game-master-label">Le maître du jeu vous parle</p>
             <p id="game-message"></p>
             <p class="game-progress" id="game-progress"></p>
+            <div class="game-controls">
+              <p class="game-countdown" id="game-countdown" role="timer" aria-live="off"></p>
+              <button class="back-button game-voice-toggle" id="game-voice-toggle" type="button" aria-pressed="false">Activer la voix du maître du jeu</button>
+            </div>
             <div class="game-deaths" id="game-deaths"></div>
             <div class="game-action-area" id="game-action-area"></div>
           </section>

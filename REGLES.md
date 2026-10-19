@@ -2,11 +2,13 @@
 
 Cette version comprend les huit personnages principaux. Les personnages premium, dont le Vampire, ne sont pas distribués et n'agissent pas dans une partie standard.
 
+Les pseudos des joueurs sont limités à 10 caractères et commencent par une majuscule.
+
 ## Village
 
 - **Villageois** : aucun pouvoir. Le village gagne quand aucun Loup-Garou, Loup Enragé ou Loup Blanc ne reste en vie.
 - **Voyante** : chaque nuit, découvre en privé le rôle d'un joueur vivant.
-- **Sorcière** : connaît la victime choisie par la meute. Elle possède une potion de vie et une potion de mort, chacune utilisable une fois. Elle peut se sauver et utiliser les deux potions la même nuit.
+- **Sorcière** : connaît la victime choisie par la meute. Elle possède une potion de vie et une potion de mort, chacune utilisable une fois. La potion de vie ne peut être utilisée que si la meute a choisi une victime. Elle peut se sauver et utiliser les deux potions la même nuit.
 - **Cupidon** : la première nuit, choisit deux joueurs différents. Si l'un meurt, l'autre meurt aussi. Si les amoureux sont de camps différents, ils gagnent ensemble s'ils sont les deux derniers survivants ; sinon, ils gardent leur victoire de camp.
 - **Chasseur** : à sa mort, quelle qu'en soit la cause, choisit un joueur vivant à éliminer. Le lien amoureux et le pouvoir du Chasseur peuvent entraîner d'autres morts en chaîne.
 
@@ -28,5 +30,7 @@ La meute gagne lorsque tous les survivants sont des Loups-Garous ou des Loups En
 6. La Voyante découvre un rôle.
 7. Les morts sont appliquées, puis le pouvoir du Chasseur et les morts d'amoureux sont résolus.
 8. Si la partie continue, le village vote le jour. Une égalité de votes ne mène à aucune élimination.
+
+Le maître du jeu accompagne la partie avec une narration lors des transitions, des votes et des résultats. Les consignes d'action sont adressées au joueur concerné. Les rôles, visions, conversions et décisions de potion restent privés tant qu'ils ne sont pas révélés par les règles.
 
 Les actions nocturnes sont personnelles dans les salons en ligne. En mode local, les joueurs passent l'appareil à tour de rôle ; le serveur ne révèle pas les choix ni les rôles aux autres joueurs via l'état public du salon.

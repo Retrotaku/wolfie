@@ -5,6 +5,13 @@ const lobbyPanel = document.querySelector("#lobby-view");
 const roomWorkspace = document.querySelector("#room-workspace");
 const lobbyStatus = document.querySelector("#lobby-status");
 const setupStatus = document.querySelector("#setup-status");
+const accountPanel = document.querySelector("#account-panel");
+const accountToggle = document.querySelector("#account-toggle");
+const accountStatus = document.querySelector("#account-status");
+const accountAuthForm = document.querySelector("#account-auth-form");
+const accountProfileForm = document.querySelector("#account-profile-form");
+const accountSignupFields = document.querySelector("#account-signup-fields");
+const accountSwitchMode = document.querySelector("#account-switch-mode");
 const modeChoices = document.querySelector("#mode-choices");
 const modePanels = {
   local: document.querySelector("#local-panel"),
@@ -26,17 +33,179 @@ let activeRoom = null;
 let activeRoomView = null;
 let pollTimer = null;
 let gamePollTimer = null;
+let gameTimerInterval = null;
+let currentGameTimerId = null;
+let currentGameTimer = null;
+let currentGameTimerPreviousRemaining = null;
+let currentGameAction = null;
+let currentGameResponse = null;
+let lastGameSpokenMessage = null;
+let pendingGameConfirmation = null;
+let reminderSpokenForTimer = null;
+let gameVoiceEnabled = false;
+const gameActionSelections = new Map();
 let compositionDirty = false;
 let onlineRoleLoaded = false;
 let localGameStarted = false;
 const revealedLocalPlayers = new Set();
 let selectedLocalPlayer = null;
+let accountAuthMode = "login";
+let currentAccount = null;
 
 const playerCountSelect = document.querySelector("#local-player-count");
 const playerFields = document.querySelector("#local-player-fields");
 const playerNameEntry = document.querySelector("#player-name-entry");
 const playerNameInput = document.querySelector("#player-name-input");
 let activePlayerIndex = null;
+
+async function accountRequest(url, method = "GET", data = null) {
+  const response = await fetch(url, {
+    method,
+    headers: data ? { "Content-Type": "application/json" } : {},
+    body: data ? JSON.stringify(data) : undefined,
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Le service de comptes a échoué.");
+  return result;
+}
+
+function showAccount(account) {
+  currentAccount = account;
+  const signedIn = Boolean(account);
+  accountAuthForm.hidden = signedIn;
+  accountSwitchMode.hidden = signedIn;
+  accountProfileForm.hidden = !signedIn;
+  accountToggle.textContent = signedIn ? "Mon profil" : "Mon compte";
+  if (!signedIn) return;
+
+  document.querySelector("#account-profile-email").textContent = account.email;
+  document.querySelector("#account-profile-name").value = account.profile.display_name;
+  document.querySelector("#account-profile-bio").value = account.profile.bio || "";
+  for (const input of ["#host-name", "#join-name"]) {
+    const nameInput = document.querySelector(input);
+    if (!nameInput.value) nameInput.value = account.profile.display_name;
+  }
+}
+
+async function loadAccount() {
+  accountStatus.textContent = "";
+  try {
+    const result = await accountRequest("/api/account/profile");
+    showAccount(result.account);
+  } catch (error) {
+    showAccount(null);
+    if (!error.message.includes("Connecte-toi") && !error.message.includes("session a expiré")) {
+      accountStatus.textContent = error.message;
+    }
+  }
+}
+
+accountToggle.addEventListener("click", async () => {
+  accountPanel.hidden = !accountPanel.hidden;
+  if (!accountPanel.hidden) await loadAccount();
+});
+
+const gameVoiceToggle = document.querySelector("#game-voice-toggle");
+gameVoiceToggle.addEventListener("click", () => {
+  if (!("speechSynthesis" in window) || !window.SpeechSynthesisUtterance) {
+    document.querySelector("#game-countdown").textContent =
+      "La synthèse vocale n’est pas disponible dans ce navigateur.";
+    return;
+  }
+  gameVoiceEnabled = !gameVoiceEnabled;
+  gameVoiceToggle.setAttribute("aria-pressed", String(gameVoiceEnabled));
+  gameVoiceToggle.textContent = gameVoiceEnabled
+    ? "Désactiver la voix du maître du jeu"
+    : "Activer la voix du maître du jeu";
+  if (gameVoiceEnabled && currentGameResponse) {
+    speakGameMaster(currentGameAction?.prompt || currentGameResponse.state.message);
+  } else {
+    window.speechSynthesis.cancel();
+  }
+});
+
+document.querySelector("#account-close").addEventListener("click", () => {
+  accountPanel.hidden = true;
+});
+
+accountSwitchMode.addEventListener("click", () => {
+  accountAuthMode = accountAuthMode === "login" ? "signup" : "login";
+  const signingUp = accountAuthMode === "signup";
+  accountSignupFields.hidden = !signingUp;
+  document.querySelector("#account-auth-submit").innerHTML = signingUp
+    ? "Créer mon compte <span>↗</span>"
+    : "Se connecter <span>↗</span>";
+  accountSwitchMode.textContent = signingUp
+    ? "J’ai déjà un compte"
+    : "Créer un compte";
+  document.querySelector("#account-password").autocomplete =
+    signingUp ? "new-password" : "current-password";
+  accountStatus.textContent = "";
+});
+
+accountAuthForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = document.querySelector("#account-auth-submit");
+  submit.disabled = true;
+  accountStatus.textContent = "";
+  const data = {
+    email: document.querySelector("#account-email").value,
+    password: document.querySelector("#account-password").value,
+  };
+  try {
+    if (accountAuthMode === "signup") {
+      data.display_name = document.querySelector("#account-display-name").value;
+      const result = await accountRequest("/api/account/signup", "POST", data);
+      if (result.requires_confirmation) {
+        accountAuthMode = "login";
+        accountSignupFields.hidden = true;
+        accountSwitchMode.textContent = "Créer un compte";
+        submit.innerHTML = "Se connecter <span>↗</span>";
+        accountStatus.textContent = result.message;
+        return;
+      }
+      showAccount(result.account);
+      accountStatus.textContent = "Ton compte est créé et ton profil est prêt.";
+    } else {
+      const result = await accountRequest("/api/account/login", "POST", data);
+      showAccount(result.account);
+      accountStatus.textContent = "Tu es connecté.";
+    }
+  } catch (error) {
+    accountStatus.textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+accountProfileForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = accountProfileForm.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  accountStatus.textContent = "";
+  try {
+    const result = await accountRequest("/api/account/profile", "PATCH", {
+      display_name: document.querySelector("#account-profile-name").value,
+      bio: document.querySelector("#account-profile-bio").value,
+    });
+    showAccount(result.account);
+    accountStatus.textContent = "Ton profil a été enregistré.";
+  } catch (error) {
+    accountStatus.textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.querySelector("#account-logout").addEventListener("click", async () => {
+  try {
+    await accountRequest("/api/account/logout", "POST", {});
+    showAccount(null);
+    accountStatus.textContent = "Tu es déconnecté.";
+  } catch (error) {
+    accountStatus.textContent = error.message;
+  }
+});
 
 function renderLocalPlayerFields() {
   const savedNames = [...playerFields.querySelectorAll("[data-player-name]")]
@@ -376,6 +545,8 @@ function initializeRoleReveal(room) {
   refreshGamePanel();
   if (gamePollTimer) window.clearInterval(gamePollTimer);
   gamePollTimer = window.setInterval(refreshGamePanel, 2000);
+  if (gameTimerInterval) window.clearInterval(gameTimerInterval);
+  gameTimerInterval = window.setInterval(updateGameCountdown, 250);
 }
 
 function gamePhaseLabel(phase) {
@@ -388,8 +559,180 @@ function gamePhaseLabel(phase) {
   }[phase] || "Partie en cours";
 }
 
+function speakGameMaster(text) {
+  if (!gameVoiceEnabled || !text || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new window.SpeechSynthesisUtterance(text);
+  utterance.lang = "fr-FR";
+  utterance.rate = 0.94;
+  const frenchVoice = window.speechSynthesis.getVoices().find(
+    (voice) => voice.lang.toLowerCase().startsWith("fr"),
+  );
+  if (frenchVoice) utterance.voice = frenchVoice;
+  window.speechSynthesis.speak(utterance);
+}
+
+function formatCountdown(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function updateGameCountdown() {
+  const countdown = document.querySelector("#game-countdown");
+  if (!currentGameTimer) {
+    countdown.hidden = true;
+    return;
+  }
+  countdown.hidden = false;
+  const remaining = Math.max(
+    0,
+    Math.ceil(currentGameTimer.deadline - Date.now() / 1000),
+  );
+  countdown.textContent = remaining
+    ? `Temps restant : ${formatCountdown(remaining)}`
+    : "Temps écoulé — résolution en cours";
+  const halfway = currentGameTimer.duration / 2;
+  if (
+    currentGameAction
+    && currentGameTimerPreviousRemaining !== null
+    && currentGameTimerPreviousRemaining > halfway
+    && remaining <= halfway
+    && reminderSpokenForTimer !== currentGameTimer.id
+  ) {
+    reminderSpokenForTimer = currentGameTimer.id;
+    speakGameMaster(currentGameAction.prompt);
+  }
+  currentGameTimerPreviousRemaining = remaining;
+}
+
+function actionVerb(action, fieldName) {
+  if (fieldName === "first_target" || fieldName === "second_target") return "lier";
+  if (fieldName === "kill_target") return "empoisonner";
+  return {
+    vote: "bannir",
+    wolf_vote: "dévorer",
+    enrage: "infecter",
+    white_wolf: "éliminer",
+    seer: "sonder",
+    hunter: "éliminer",
+  }[action.kind] || "choisir";
+}
+
+function renderPlayerChoiceField(form, field, action) {
+  const label = document.createElement("label");
+  label.textContent = field.label;
+  const select = document.createElement("select");
+  select.className = "game-player-select";
+  select.name = field.name;
+  select.setAttribute("aria-label", field.label);
+  select.dataset.required = String(field.required);
+  field.options.forEach((option) => {
+    const choice = document.createElement("option");
+    choice.value = option.value;
+    choice.textContent = option.label;
+    select.append(choice);
+  });
+  select.value = gameActionSelections.get(field.name) || "";
+  label.append(select);
+  form.append(label);
+
+  const choices = document.createElement("div");
+  choices.className = "game-player-choices";
+  choices.setAttribute("aria-label", field.label);
+  const otherCupidTarget = field.name === "second_target"
+    ? gameActionSelections.get("first_target")
+    : field.name === "first_target"
+      ? gameActionSelections.get("second_target")
+      : null;
+  field.options.filter((option) => option.value).forEach((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "game-player-choice";
+    button.dataset.gameChoice = field.name;
+    button.dataset.playerIndex = option.value;
+    button.textContent = option.label;
+    button.setAttribute("aria-pressed", String(select.value === option.value));
+    button.disabled = option.value === otherCupidTarget;
+    choices.append(button);
+  });
+  form.append(choices);
+
+  if (select.value) {
+    const selectedName = field.options.find(
+      (option) => option.value === select.value,
+    )?.label;
+    const deselect = document.createElement("button");
+    deselect.type = "button";
+    deselect.className = "game-player-deselect";
+    deselect.dataset.gameDeselect = field.name;
+    deselect.textContent = `Désélectionner ${selectedName || "ce joueur"}`;
+    form.append(deselect);
+  }
+
+  if (field.options.some((option) => option.value === "")) {
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "game-player-skip";
+    skip.dataset.gameSkip = field.name;
+    skip.textContent = field.name === "target"
+      ? "M’abstenir"
+      : "Ne pas utiliser ce pouvoir";
+    form.append(skip);
+  }
+
+  const confirmation = document.createElement("div");
+  confirmation.className = "game-confirmation";
+  confirmation.hidden = pendingGameConfirmation?.field !== field.name;
+  if (!confirmation.hidden) {
+    const player = field.options.find(
+      (option) => option.value === pendingGameConfirmation.playerIndex,
+    );
+    const question = document.createElement("p");
+    question.textContent = `Voulez-vous ${actionVerb(action, field.name)} ${player?.label || "ce joueur"} ?`;
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "primary-button";
+    confirm.dataset.gameConfirm = field.name;
+    confirm.textContent = "Confirmer";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "back-button";
+    cancel.dataset.gameCancel = field.name;
+    cancel.textContent = "Annuler";
+    confirmation.append(question, confirm, cancel);
+  }
+  form.append(confirmation);
+}
+
 function renderGamePanel(response) {
+  currentGameResponse = response;
   const state = response.state;
+  const timer = state.timer;
+  const timerChanged = timer?.id !== currentGameTimerId;
+  if (timerChanged) {
+    gameActionSelections.clear();
+    pendingGameConfirmation = null;
+    currentGameTimerId = timer?.id || null;
+    reminderSpokenForTimer = null;
+    currentGameTimerPreviousRemaining = timer
+      ? Math.max(0, Math.ceil(timer.deadline - Date.now() / 1000))
+      : null;
+  }
+  currentGameTimer = timer;
+  currentGameAction = response.action;
+  if (timerChanged) {
+    speakGameMaster(response.action?.prompt || state.message);
+    if (!response.action) lastGameSpokenMessage = state.message;
+  } else if (
+    !response.action
+    && state.message !== lastGameSpokenMessage
+  ) {
+    lastGameSpokenMessage = state.message;
+    speakGameMaster(state.message);
+  } else if (response.action && reminderSpokenForTimer === timer?.id) {
+    currentGameAction = response.action;
+  }
   document.querySelector("#game-round").textContent =
     state.phase === "day" ? `JOUR ${state.round}` : `NUIT ${state.round}`;
   document.querySelector("#game-phase-title").textContent = gamePhaseLabel(state.phase);
@@ -418,29 +761,48 @@ function renderGamePanel(response) {
   if (action) {
     const prompt = document.createElement("p");
     prompt.className = "game-action-prompt";
-    prompt.textContent = action.prompt;
+    const speaker = document.createElement("span");
+    speaker.className = "game-master-speaker";
+    speaker.textContent = "Maître du jeu";
+    const dialogue = document.createElement("span");
+    dialogue.textContent = action.prompt;
+    prompt.append(speaker, dialogue);
     const form = document.createElement("form");
     form.id = "game-action-form";
     action.fields.forEach((field) => {
-      const label = document.createElement("label");
-      label.textContent = field.label;
-      const select = document.createElement("select");
-      select.name = field.name;
-      select.required = field.required;
-      field.options.forEach((option) => {
-        const choice = document.createElement("option");
-        choice.value = option.value;
-        choice.textContent = option.label;
-        select.append(choice);
-      });
-      label.append(select);
-      form.append(label);
+      if (
+        ["target", "first_target", "second_target", "kill_target"].includes(field.name)
+        && field.options.some((option) => option.value)
+      ) {
+        renderPlayerChoiceField(form, field, action);
+      } else {
+        const label = document.createElement("label");
+        label.textContent = field.label;
+        const select = document.createElement("select");
+        select.name = field.name;
+        select.required = field.required;
+        field.options.forEach((option) => {
+          const choice = document.createElement("option");
+          choice.value = option.value;
+          choice.textContent = option.label;
+          select.append(choice);
+        });
+        label.append(select);
+        form.append(label);
+      }
     });
     const submit = document.createElement("button");
     submit.type = "submit";
     submit.className = "primary-button";
     submit.textContent = action.button;
+    submit.disabled = [...form.querySelectorAll("select")].some((select) => (
+      (select.required || select.dataset.required === "true") && !select.value
+    ));
     form.append(submit);
+    const status = document.createElement("p");
+    status.className = "game-action-status";
+    status.id = "game-action-status";
+    form.append(status);
     area.append(prompt, form);
   } else if (state.phase === "finished") {
     const winners = document.createElement("p");
@@ -468,6 +830,7 @@ function renderGamePanel(response) {
     privateResult.textContent = response.private_result;
     area.append(privateResult);
   }
+  updateGameCountdown();
 }
 
 async function refreshGamePanel() {
@@ -503,6 +866,14 @@ async function refreshGamePanel() {
 document.querySelector("#game-action-area").addEventListener("submit", async (event) => {
   if (event.target.id !== "game-action-form" || !activeRoom) return;
   event.preventDefault();
+  const incomplete = [...event.target.querySelectorAll("select")].some((select) => (
+    (select.required || select.dataset.required === "true") && !select.value
+  ));
+  if (incomplete) {
+    document.querySelector("#game-action-status").textContent =
+      "Choisis et confirme chaque joueur demandé avant de valider.";
+    return;
+  }
   const payload = {};
   for (const [key, value] of new FormData(event.target).entries()) {
     payload[key] = key === "save"
@@ -535,6 +906,38 @@ document.querySelector("#game-action-area").addEventListener("submit", async (ev
   } catch (error) {
     lobbyStatus.textContent = error.message;
     submit.disabled = false;
+  }
+});
+
+document.querySelector("#game-action-area").addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button || !currentGameResponse) return;
+  if (button.dataset.gameChoice) {
+    pendingGameConfirmation = {
+      field: button.dataset.gameChoice,
+      playerIndex: button.dataset.playerIndex,
+    };
+    renderGamePanel(currentGameResponse);
+    return;
+  }
+  if (button.dataset.gameConfirm) {
+    gameActionSelections.set(
+      button.dataset.gameConfirm,
+      pendingGameConfirmation.playerIndex,
+    );
+    pendingGameConfirmation = null;
+    renderGamePanel(currentGameResponse);
+    return;
+  }
+  if (button.dataset.gameCancel) {
+    pendingGameConfirmation = null;
+    renderGamePanel(currentGameResponse);
+    return;
+  }
+  if (button.dataset.gameDeselect || button.dataset.gameSkip) {
+    gameActionSelections.delete(button.dataset.gameDeselect || button.dataset.gameSkip);
+    if (pendingGameConfirmation) pendingGameConfirmation = null;
+    renderGamePanel(currentGameResponse);
   }
 });
 
@@ -571,10 +974,10 @@ function renderLocalRoleBoard() {
       ? `Revoir le rôle de ${player.name}`
       : isNamed ? `Voir le rôle de ${player.name}` : `Choisir la case ${index + 1}`);
     if (isNamed) {
-      const initial = document.createElement("span");
-      initial.className = "deal-tile-initial";
-      initial.textContent = player.name.charAt(0).toLocaleUpperCase("fr");
-      tile.append(initial);
+      const name = document.createElement("span");
+      name.className = "deal-tile-name";
+      name.textContent = player.name;
+      tile.append(name);
     } else {
       const icon = document.createElement("img");
       icon.className = "deal-tile-icon";
@@ -584,12 +987,6 @@ function renderLocalRoleBoard() {
       tile.append(icon);
     }
     if (isRevealed) tile.classList.add("revealed");
-    if (isNamed) {
-      const name = document.createElement("span");
-      name.className = "deal-tile-name";
-      name.textContent = player.name;
-      tile.append(name);
-    }
     tile.addEventListener("click", () => {
       if (isNamed) {
         openLocalRoleCard(index, isRevealed);

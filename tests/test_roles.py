@@ -4,6 +4,7 @@ from Wolfie.app import (
     MIN_PLAYERS,
     ROLE_CARDS,
     app,
+    clean_name,
     composition_counts,
     default_composition,
     rooms,
@@ -60,6 +61,19 @@ class CompositionTests(unittest.TestCase):
             validate_composition(
                 {"special_roles": ["villageois"], "wolf_roles": []}, 6
             )
+
+
+class PlayerNameTests(unittest.TestCase):
+    def test_name_is_trimmed_and_first_character_capitalized(self):
+        self.assertEqual(clean_name("  alice  "), "Alice")
+        self.assertEqual(clean_name("éloi"), "Éloi")
+
+    def test_name_is_limited_to_ten_characters(self):
+        self.assertEqual(clean_name("abcdefghij"), "Abcdefghij")
+        with self.assertRaisesRegex(ValueError, "10 caractères"):
+            clean_name("abcdefghijk")
+        with self.assertRaisesRegex(ValueError, "vide"):
+            clean_name("   ")
 
 
 class RoleRouteTests(unittest.TestCase):

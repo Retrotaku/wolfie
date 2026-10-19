@@ -2,6 +2,8 @@
 
 Base du jeu de Loup-Garou : lobby local sur un appareil et salons en ligne rejoignables par code. Une partie compte de 6 à 14 joueurs. Avant le lancement, la personne hôte peut ajuster la proposition de rôles ; les cartes spéciales ne sont jamais dupliquées, et le nombre de loups et de villageois reste équilibré (avec un villageois de plus si le total restant est impair).
 
+Les pseudos sont limités à 10 caractères et leur première lettre est automatiquement mise en majuscule.
+
 La proposition de base est la suivante :
 
 | Joueurs | Rôles spéciaux | Loups | Villageois |
@@ -35,7 +37,7 @@ En mode local, saisis de six à quatorze noms, un par ligne. En mode en ligne, l
 
 ## Salons en ligne
 
-Le serveur doit rester allumé et être accessible par tous les joueurs. Pour des joueurs hors du réseau local, il faut déployer Wolfie sur un serveur public accessible en HTTPS. Les salons et leurs participants sont conservés en mémoire : ils disparaissent au redémarrage du serveur. Les tours nocturnes, les pouvoirs principaux, les votes, les liens amoureux, les morts du Chasseur et les conditions de victoire sont gérés. Les rôles premium ne sont pas activés.
+Le serveur doit rester allumé et être accessible par tous les joueurs. Pour des joueurs hors du réseau local, il faut déployer Wolfie sur un serveur public accessible en HTTPS. Les salons et leurs participants sont conservés en mémoire : ils disparaissent au redémarrage du serveur. Les tours nocturnes, les pouvoirs principaux, les votes, les liens amoureux, les morts du Chasseur et les conditions de victoire sont gérés. Une narration du maître du jeu accompagne les phases et les résultats, avec des consignes privées pour les actions secrètes. Les rôles premium ne sont pas activés.
 
 ## Déployer sur GitHub + Render
 
@@ -64,13 +66,14 @@ Ou, si tu veux le créer directement depuis GitHub CLI :
 3. Sur Render, crée un service Web à partir de ce dépôt et sélectionne `render.yaml`.
 4. L’application sera accessible sur une URL publique Render, compatible avec les salons en ligne.
 
-## À prévoir pour la vraie version "comptes joueurs"
+## Comptes joueurs et profils Supabase
 
-La version actuelle reste un prototype de jeu avec salles en mémoire. Pour ajouter des comptes joueurs, profils personnels et données persistantes, il faudra plus tard :
+Les comptes utilisent Supabase Auth (e-mail et mot de passe) et les profils sont enregistrés dans PostgreSQL. Le profil comprend un pseudo de 10 caractères maximum et une bio facultative de 280 caractères maximum. La création de compte ne bloque pas les parties anonymes. Après connexion, le pseudo du profil est proposé automatiquement comme nom d’hôte ou de joueur en ligne.
 
-- une base PostgreSQL,
-- une authentification utilisateur (Supabase/Auth),
-- une table `users`, `profiles`, `games`, `sessions`,
-- une interface d’accueil personnelle (dashboard, profil, historique).
+1. Crée un projet Supabase et ouvre son éditeur SQL.
+2. Exécute [`supabase/schema.sql`](./supabase/schema.sql) pour créer la table `profiles`, ses politiques RLS et le déclencheur qui crée le profil après l’inscription.
+3. Copie `SUPABASE_URL` et la clé publique `anon`/publishable du projet dans `.env`, à partir de `.env.example`. Ne mets jamais la clé `service_role` dans l’application.
+4. Dans les paramètres d’authentification Supabase, configure l’envoi de courriels de confirmation et l’URL du site correspondant à Wolfie.
+5. Pour Render, renseigne `SUPABASE_URL` et `SUPABASE_ANON_KEY` dans les variables d’environnement du service.
 
-Ce socle de déploiement est prêt pour passer à cette étape sans refaire l’architecture de base.
+Les jetons Supabase restent côté serveur dans une session HTTP-only. Les sessions de connexion sont en mémoire et demandent une nouvelle connexion après un redémarrage du serveur ; les profils, eux, restent conservés dans Supabase. Les salons de jeu restent également en mémoire.

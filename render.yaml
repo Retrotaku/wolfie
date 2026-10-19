@@ -12,3 +12,7 @@ services:
         value: "1"
       - key: PREFERRED_URL_SCHEME
         value: "https"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
