@@ -14,8 +14,11 @@ const introAudioLabel = document.querySelector("#intro-audio-label");
 const introEnter = document.querySelector("#intro-enter");
 const introEnterLabel = document.querySelector("#intro-enter-label");
 const introStatus = document.querySelector("#intro-status");
-const introEndActions = document.querySelector("#intro-end-actions");
 const introHowPanel = document.querySelector("#intro-how-panel");
+const introHowButton = document.querySelector("#intro-how-button");
+const introAction = document.querySelector("#intro-skip");
+const introActionIcon = document.querySelector("#intro-skip-icon");
+const introActionLabel = document.querySelector("#intro-skip-label");
 const accountStatus = document.querySelector("#account-status");
 const accountAuthForm = document.querySelector("#account-auth-form");
 const accountProfileForm = document.querySelector("#account-profile-form");
@@ -60,10 +63,21 @@ let pendingGameConfirmation = null;
 let reminderSpokenForTimer = null;
 let gameVoiceEnabled = true;
 const gameActionSelections = new Map();
+const seenPrivateGameResults = new Set();
+const seenWitchVictimResults = new Set();
+let pendingPrivateGameResult = null;
+let privateGameResultRevealed = false;
+let allowPrivateLoversResult = false;
+let privatePairRopeObserver = null;
+let pendingWitchVictimResultKey = null;
+let witchVictimResultRevealed = false;
 let compositionDirty = false;
 let onlineRoleLoaded = false;
 let localGameStarted = false;
 let chiefDrawTimer = null;
+let chiefDrawShown = false;
+let chiefDrawAcknowledged = false;
+let chiefInstructionsAcknowledged = false;
 const revealedLocalPlayers = new Set();
 let selectedLocalPlayer = null;
 let accountAuthMode = "login";
@@ -73,10 +87,58 @@ let gameBackPressArmed = false;
 let gameBackPressTimer = null;
 
 const introStorageKey = "wolfie-intro-seen";
+const activeRoomStorageKey = "wolfie-active-room";
+const gameUiStorageKey = "wolfie-game-ui";
 let firstVisitIntro = false;
 
+function readStoredJson(key) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredJson(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // The game remains playable when browser storage is unavailable.
+  }
+}
+
+function persistGameSession() {
+  if (!activeRoom || !activeRoomView) return;
+  writeStoredJson(activeRoomStorageKey, {
+    code: activeRoom,
+    mode: activeRoomView.mode,
+  });
+  writeStoredJson(gameUiStorageKey, {
+    privateGameResultRevealed,
+    witchVictimResultRevealed,
+    acknowledgedInstructionKey,
+    chiefDrawShown,
+    chiefDrawAcknowledged,
+    chiefInstructionsAcknowledged,
+    localGameStarted,
+    selectedLocalPlayer,
+    revealedLocalPlayers: [...revealedLocalPlayers],
+  });
+}
+
+function clearPersistedGameSession() {
+  try {
+    window.localStorage.removeItem(activeRoomStorageKey);
+    window.localStorage.removeItem(gameUiStorageKey);
+  } catch {
+    // Nothing to clear when browser storage is unavailable.
+  }
+}
+
 try {
-  firstVisitIntro = window.localStorage.getItem(introStorageKey) !== "true";
+  firstVisitIntro = window.localStorage.getItem(introStorageKey) !== "true"
+    || new URLSearchParams(window.location.search).get("intro") === "1";
 } catch {
   firstVisitIntro = true;
 }
@@ -101,6 +163,10 @@ function enterHome() {
     introScene.hidden = true;
     introScene.classList.remove("is-leaving");
   }, 800);
+}
+
+function skipIntro() {
+  enterHome();
 }
 
 async function startIntroAudio() {
@@ -142,42 +208,44 @@ introAudio.addEventListener("pause", () => {
 introAudio.addEventListener("ended", () => {
   updateIntroAudioControl(false);
   if (introScene.hidden) return;
-  introEnter.hidden = true;
-  document.querySelector("#intro-skip").hidden = true;
+  introActionIcon.textContent = "✦";
+  introActionLabel.textContent = "Commencer la partie";
+  introAction.setAttribute("aria-label", "Commencer la partie");
   introStatus.hidden = true;
-  introEndActions.hidden = false;
   introHowPanel.hidden = true;
   introScene.setAttribute("aria-labelledby", "intro-title");
   introScene.removeAttribute("aria-describedby");
-  document.querySelector("#intro-start-game").focus();
+  introAction.focus();
 });
 introAudioToggle.addEventListener("click", async () => {
-  if (!introScene.hidden) return;
-  if (!introAudio.paused) {
-    introAudio.pause();
-    return;
-  }
-  if (introAudio.ended) introAudio.currentTime = 0;
-  try {
-    await introAudio.play();
-  } catch {
-    introAudioLabel.textContent = "Lecture indisponible — réessaie";
-  }
+  if (introScene.hidden) window.location.assign("/?intro=1");
 });
 
 introEnter.addEventListener("click", async () => {
   if (!introEnter.disabled && introAudio.paused) await startIntroAudio();
 });
-document.querySelector("#intro-skip").addEventListener("click", enterHome);
-document.querySelector("#intro-start-game").addEventListener("click", enterHome);
-document.querySelector("#intro-how-button").addEventListener("click", () => {
+introAction.addEventListener("click", () => {
+  if (!introAudio.ended) {
+    skipIntro();
+    return;
+  }
+  try {
+    window.localStorage.setItem(introStorageKey, "true");
+  } catch {
+    // The mode selection still works when browser storage is unavailable.
+  }
+  window.location.assign("/");
+});
+introHowButton.addEventListener("click", () => {
   introContentHidden(true);
+  introHowButton.hidden = true;
   introHowPanel.hidden = false;
   introScene.setAttribute("aria-labelledby", "intro-how-title");
   document.querySelector("#intro-how-back").focus();
 });
 document.querySelector("#intro-how-back").addEventListener("click", () => {
   introHowPanel.hidden = true;
+  introHowButton.hidden = false;
   introContentHidden(false);
   introScene.setAttribute("aria-labelledby", "intro-title");
   document.querySelector("#intro-how-button").focus();
@@ -190,7 +258,7 @@ function introContentHidden(hidden) {
     document.querySelector(".intro-wordmark"),
     document.querySelector("#intro-title"),
     document.querySelector(".intro-tagline"),
-    introEndActions,
+    introAction,
   ]) {
     element.hidden = hidden;
   }
@@ -203,7 +271,7 @@ if (firstVisitIntro) {
   document.querySelector("header").inert = true;
   document.querySelector("main").inert = true;
   document.querySelector("footer").inert = true;
-  introEnter.focus();
+  introAction.focus();
   startIntroAudio();
 } else {
   introScene.hidden = true;
@@ -229,14 +297,14 @@ const localRoleCounts = Object.fromEntries([
 ].map((role) => [role, 0]));
 let localRoleSetupPlayerCount = null;
 const localRoleCardsData = [
-  { id: "villageois", name: "Villageois", image: "Villageois.jpeg", icon: "⌂", unique: false, description: "Sans pouvoir spécial, tu aides le village à démasquer les loups." },
-  { id: "loup_garou", name: "Loup-Garou", image: "Loup garou.jpeg", icon: "☾", unique: false, description: "Chaque nuit, vote avec la meute pour éliminer un joueur." },
-  { id: "voyante", name: "Voyante", image: "Voyante.jpeg", icon: "◉", unique: true, description: "Chaque nuit, découvre le rôle d’un joueur." },
-  { id: "sorciere", name: "Sorcière", image: "Sorcière.jpeg", icon: "✦", unique: true, description: "Tu possèdes une potion de vie et une potion de mort, chacune utilisable une fois." },
-  { id: "chasseur", name: "Chasseur", image: "Chasseur.png", icon: "➶", unique: true, description: "À ta mort, tu peux éliminer un joueur vivant." },
-  { id: "cupidon", name: "Cupidon", image: "Cupidon.png", icon: "♡", unique: true, description: "La première nuit, lie deux joueurs : si l’un meurt, l’autre meurt aussi." },
-  { id: "loup_enrage", name: "Loup Enragé", image: "Loup enragé.jpeg", icon: "☾", unique: true, description: "Une fois dans la partie, convertis un joueur en Loup-Garou ordinaire." },
-  { id: "loup_blanc", name: "Loup Blanc", image: "Loup blanc.jpeg", icon: "☾", unique: true, description: "Indépendant, tu peux éliminer un joueur une nuit sur deux à partir de la nuit 2." },
+  { id: "villageois", name: "Villageois", image: "Villageois.jpeg", unique: false, description: "Sans pouvoir spécial, tu aides le village à démasquer les loups." },
+  { id: "loup_garou", name: "Loup-Garou", image: "Loup garou.jpeg", unique: false, description: "Chaque nuit, vote avec la meute pour éliminer un joueur." },
+  { id: "voyante", name: "Voyante", image: "Voyante.jpeg", unique: true, description: "Chaque nuit, découvre le rôle d’un joueur." },
+  { id: "sorciere", name: "Sorcière", image: "Sorcière.jpeg", unique: true, description: "Tu possèdes une potion de vie et une potion de mort, chacune utilisable une fois." },
+  { id: "chasseur", name: "Chasseur", image: "Chasseur.png", unique: true, description: "À ta mort, tu peux éliminer un joueur vivant." },
+  { id: "cupidon", name: "Cupidon", image: "Cupidon.png", unique: true, description: "La première nuit, lie deux joueurs : si l’un meurt, l’autre meurt aussi." },
+  { id: "loup_enrage", name: "Loup Enragé", image: "Loup enragé.jpeg", unique: true, description: "Une fois dans la partie, convertis un joueur en Loup-Garou ordinaire." },
+  { id: "loup_blanc", name: "Loup Blanc", image: "Loup blanc.jpeg", unique: true, description: "Indépendant, tu peux éliminer un joueur une nuit sur deux à partir de la nuit 2." },
 ];
 let activePlayerIndex = null;
 
@@ -308,7 +376,7 @@ function renderLocalRoleCards() {
     });
 
     const countBadge = document.createElement("span");
-    countBadge.className = "local-role-count";
+    countBadge.className = "local-role-quantity";
     countBadge.hidden = count === 0;
     countBadge.textContent = `×${count}`;
     countBadge.setAttribute("aria-label", `${count} carte${count > 1 ? "s" : ""}`);
@@ -325,10 +393,6 @@ function renderLocalRoleCards() {
       localRoleCounts[role.id] = Math.max(0, localRoleCounts[role.id] - 1);
       renderLocalRoleCards();
     });
-    const icon = document.createElement("span");
-    icon.className = "local-role-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = role.icon;
     const increase = document.createElement("button");
     increase.type = "button";
     increase.className = "local-role-step";
@@ -341,8 +405,8 @@ function renderLocalRoleCards() {
       localRoleCounts[role.id] += 1;
       renderLocalRoleCards();
     });
-    controls.append(decrease, icon, increase);
-    card.append(selectButton, countBadge, controls);
+    controls.append(decrease, countBadge, increase);
+    card.append(selectButton, controls);
     localRoleCards.append(card);
   }
 }
@@ -581,6 +645,10 @@ document.querySelector("#player-count-continue").addEventListener("click", () =>
   localRoleContinue.focus();
 });
 
+document.querySelector("#player-count-back").addEventListener("click", () => {
+  window.location.assign("/");
+});
+
 document.querySelector("#edit-local-player-count").addEventListener("click", () => {
   document.body.classList.remove("role-setup-active");
   showPlayerCountPicker();
@@ -725,13 +793,31 @@ function showLobby(room) {
   if (gamePollTimer) window.clearInterval(gamePollTimer);
   activeRoom = room.code;
   activeRoomView = room;
+  persistGameSession();
   localGameStarted = false;
+  chiefDrawShown = false;
+  chiefDrawAcknowledged = false;
+  chiefInstructionsAcknowledged = false;
+  pendingPrivateGameResult = null;
+  privateGameResultRevealed = false;
+  allowPrivateLoversResult = false;
+  seenPrivateGameResults.clear();
+  seenWitchVictimResults.clear();
+  pendingWitchVictimResultKey = null;
+  witchVictimResultRevealed = false;
+  document.querySelector("#private-game-result-screen").hidden = true;
+  document.querySelector("#witch-victim-result-screen").hidden = true;
+  document.body.classList.remove(
+    "private-game-result-active",
+    "witch-victim-result-active",
+  );
   revealedLocalPlayers.clear();
   compositionDirty = false;
   onlineRoleLoaded = false;
   const onlineRoom = room.mode === "online";
   roomWorkspace.classList.toggle("online-room-open", onlineRoom);
-  optionsPanel.hidden = !onlineRoom;
+  roomWorkspace.classList.toggle("online-room-entered", onlineRoom);
+  optionsPanel.hidden = true;
   if (onlineRoom) {
     modeChoices.hidden = true;
     modePanels.local.hidden = true;
@@ -883,6 +969,18 @@ function initializeRoleReveal(room) {
   const title = document.querySelector("#role-reveal-title");
   const instruction = document.querySelector("#role-reveal-instruction");
   document.querySelector("#revealed-role").hidden = true;
+  if (room.game?.phase !== "dealing" && !chiefDrawAcknowledged) {
+    if (!chiefDrawShown) showChiefDraw(room);
+    return;
+  }
+  if (
+    room.game?.phase !== "dealing"
+    && !chiefInstructionsAcknowledged
+    && (room.mode === "local" || room.viewer_is_chief)
+  ) {
+    showChiefInstructions();
+    return;
+  }
   if (room.mode === "local") {
     document.querySelector("#online-role-flow").hidden = true;
     document.querySelector("#local-role-flow").hidden = room.game?.phase !== "dealing";
@@ -913,10 +1011,13 @@ function initializeRoleReveal(room) {
 }
 
 function showChiefDraw(room) {
+  chiefDrawShown = true;
   document.body.classList.remove("role-board-active", "role-reveal-active", "next-player-entry-active");
   const chiefIndex = room.game?.chief_index;
   const chief = Number.isInteger(chiefIndex) ? room.players[chiefIndex] : null;
   if (!chief) {
+    chiefDrawAcknowledged = true;
+    chiefInstructionsAcknowledged = true;
     initializeRoleReveal(room);
     return;
   }
@@ -954,9 +1055,22 @@ function showChiefDraw(room) {
   }, 1800);
 }
 
+function showChiefInstructions() {
+  document.querySelector("#chief-draw-screen").hidden = true;
+  document.querySelector("#online-role-flow").hidden = true;
+  document.querySelector("#local-role-flow").hidden = true;
+  document.querySelector("#chief-instructions-screen").hidden = false;
+  gamePanel.hidden = true;
+  document.body.classList.remove("chief-draw-active", "role-reveal-active", "role-board-active");
+  document.body.classList.add("game-session", "chief-instructions-active");
+  document.querySelector("#back-button").textContent = "Quitter la partie";
+}
+
 function gamePhaseLabel(phase) {
   return {
     dealing: "Distribution des rôles",
+    cupidon: "Cupidon choisit les amoureux",
+    couple: "La première aube",
     night: "La nuit tombe",
     day: "Le village se réveille",
     hunter: "Dernier tir du Chasseur",
@@ -973,6 +1087,23 @@ function finishGameAudioField(cueId) {
   document.body.classList.remove("game-audio-visible");
 }
 
+function attachFrenchVoice(utterance) {
+  const applyFrenchVoice = () => {
+    const frenchVoice = (window.speechSynthesis.getVoices?.() || []).find(
+      (voice) => (voice.lang || "").toLowerCase().startsWith("fr"),
+    );
+    if (frenchVoice) {
+      utterance.voice = frenchVoice;
+      window.speechSynthesis.removeEventListener?.("voiceschanged", applyFrenchVoice);
+    }
+  };
+  utterance.lang = "fr-FR";
+  applyFrenchVoice();
+  if (!(window.speechSynthesis.getVoices?.().length)) {
+    window.speechSynthesis.addEventListener?.("voiceschanged", applyFrenchVoice);
+  }
+}
+
 function speakGameMaster(text, force = false) {
   if ((!gameVoiceEnabled && !force) || !text || !("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
@@ -981,7 +1112,6 @@ function speakGameMaster(text, force = false) {
   audioField.hidden = false;
   document.body.classList.add("game-audio-visible");
   const utterance = new window.SpeechSynthesisUtterance(text);
-  utterance.lang = "fr-FR";
   utterance.rate = 0.94;
   utterance.onend = () => finishGameAudioField(cueId);
   utterance.onerror = () => finishGameAudioField(cueId);
@@ -989,10 +1119,7 @@ function speakGameMaster(text, force = false) {
     () => finishGameAudioField(cueId),
     90000,
   );
-  const frenchVoice = window.speechSynthesis.getVoices().find(
-    (voice) => voice.lang.toLowerCase().startsWith("fr"),
-  );
-  if (frenchVoice) utterance.voice = frenchVoice;
+  attachFrenchVoice(utterance);
   window.speechSynthesis.speak(utterance);
 }
 
@@ -1058,7 +1185,7 @@ function actionVerb(action, fieldName) {
 
 function gameSelectionColor(action, fieldName) {
   if (action.kind === "chief_successor") return "#edc678";
-  if (action.kind === "witch" && fieldName === "save") return "#edc678";
+  if (action.kind === "witch_save" && fieldName === "save") return "#edc678";
   if (["vote", "wolf_vote", "white_wolf", "hunter", "chief_tiebreak"].includes(action.kind)) {
     return "#d94b72";
   }
@@ -1074,7 +1201,9 @@ function gameActionModalTitle(action) {
     white_wolf: "Victime du Loup Blanc",
     hunter: "Personne dans ton viseur",
     seer: "Joueur à observer",
-    witch: "Choix des potions",
+    witch_save: "Potion de vie",
+    witch_poison: "Potion de mort",
+    witch_pass: "Potions épuisées",
     enrage: "Personne à contaminer",
     vote: "Personne à bannir",
     chief_tiebreak: "Personne à départager",
@@ -1191,7 +1320,7 @@ function renderActionOptionField(container, field) {
     button.dataset.optionValue = option.value;
     button.setAttribute("aria-pressed", String(select.value === option.value));
     button.textContent = field.name === "save"
-      ? option.value === "yes" ? "Sauver la victime" : "Ne pas sauver"
+      ? option.value === "yes" ? "Sauver la victime" : "Ne rien faire"
       : option.label;
     choices.append(button);
   });
@@ -1209,15 +1338,6 @@ function gameActionButtonLabel(action, targetFields) {
     return selectedTargets.length === 2
       ? `Lier ${targetName(selectedTargets[0].value)} et ${targetName(selectedTargets[1].value)}`
       : "Choisir les deux amoureux";
-  }
-  if (action.kind === "witch") {
-    const savesVictim = gameActionSelections.get("save") === "yes";
-    const poisonTarget = targetFields.find((field) => field.name === "kill_target");
-    const poisonName = poisonTarget && targetName(gameActionSelections.get("kill_target"));
-    if (savesVictim && poisonName) return `Sauver et empoisonner ${poisonName}`;
-    if (savesVictim) return "Sauver la victime";
-    if (poisonName) return `Empoisonner ${poisonName}`;
-    return action.button;
   }
   if (!selectedTargets.length) return action.button;
   const { field, value } = selectedTargets[0];
@@ -1239,6 +1359,7 @@ function renderGameInstruction(response) {
   const screen = document.querySelector("#game-instruction-screen");
   const continueButton = document.querySelector("#game-instruction-continue");
   const instructionKey = action?.role
+    && !["lovers_reveal", "contamination_reveal"].includes(action.kind)
     ? `${response.state.timer?.id || "untimed"}:${action.actor_index}:${action.kind}`
     : null;
 
@@ -1304,11 +1425,33 @@ function renderGameInstruction(response) {
     },
     2500,
   );
-  const frenchVoice = window.speechSynthesis.getVoices().find(
-    (voice) => voice.lang.toLowerCase().startsWith("fr"),
-  );
-  if (frenchVoice) utterance.voice = frenchVoice;
+  attachFrenchVoice(utterance);
   window.speechSynthesis.speak(utterance);
+}
+
+function renderLoversChoice(area, action) {
+  const heading = document.createElement("h4");
+  heading.className = "lovers-choice-title";
+  heading.textContent = action.kind === "contamination_reveal"
+    ? "Choisis ton cadre pour vérifier ton état"
+    : "Choisis ton cadre pour consulter ton lien";
+  const instruction = document.createElement("p");
+  instruction.className = "lovers-choice-instruction";
+  instruction.textContent = "Chaque joueur touche uniquement sa propre carte, à son tour.";
+  const grid = document.createElement("div");
+  grid.className = "lovers-choice-grid";
+  activeRoomView.players.forEach((player, index) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "lovers-choice-card";
+    card.disabled = index !== action.actor_index;
+    card.dataset.privateReveal = String(index);
+    card.innerHTML = `<span aria-hidden="true">${player.name.trim().charAt(0).toUpperCase() || "?"}</span><strong></strong>`;
+    card.querySelector("strong").textContent = player.name;
+    if (index === action.actor_index) card.classList.add("is-current");
+    grid.append(card);
+  });
+  area.append(heading, instruction, grid);
 }
 
 function renderGamePanel(response) {
@@ -1334,6 +1477,8 @@ function renderGamePanel(response) {
   currentGameTimer = timer;
   currentGameAction = response.action;
   const phaseIcons = {
+    cupidon: "♡",
+    couple: "∞",
     night: "☾",
     day: "☀",
     hunter: "⚡",
@@ -1370,10 +1515,47 @@ function renderGamePanel(response) {
   }
   document.querySelector("#game-round").textContent = state.phase === "chief"
     ? "DÉCISION"
-    : ["day", "hunter"].includes(state.phase) ? `JOUR ${state.round}` : `NUIT ${state.round}`;
+    : state.phase === "couple"
+      ? `AUBE ${state.round}`
+      : ["day", "hunter"].includes(state.phase) ? `JOUR ${state.round}` : `NUIT ${state.round}`;
   document.querySelector("#game-phase-title").textContent = gamePhaseLabel(state.phase);
   document.querySelector("#game-message").textContent = state.message;
   renderGameInstruction(response);
+  const privateResult = getPrivateGameResult(response);
+  const privateResultAllowed = !["lovers_reveal", "contamination_reveal"].includes(response.action?.kind)
+    || allowPrivateLoversResult;
+  if (privateResult && privateResultAllowed && !seenPrivateGameResults.has(privateResult.id)) {
+    if (pendingPrivateGameResult?.id !== privateResult.id) {
+      privateGameResultRevealed = false;
+    }
+    pendingPrivateGameResult = privateResult;
+    allowPrivateLoversResult = false;
+    renderPrivateGameResult(privateResult);
+  }
+  const witchActionKey = response.action?.kind === "witch_save" ? actionKey : null;
+  const witchInstructionKey = response.action?.role
+    ? `${timer?.id || "untimed"}:${response.action.actor_index}:${response.action.kind}`
+    : null;
+  const witchInstructionAcknowledged = (
+    !witchInstructionKey
+    || acknowledgedInstructionKey === witchInstructionKey
+  );
+  if (
+    witchActionKey
+    && witchInstructionAcknowledged
+    && !seenWitchVictimResults.has(witchActionKey)
+  ) {
+    if (pendingWitchVictimResultKey !== witchActionKey) {
+      witchVictimResultRevealed = false;
+    }
+    pendingWitchVictimResultKey = witchActionKey;
+    renderWitchVictimResult(response.action);
+  } else if (pendingWitchVictimResultKey && witchActionKey !== pendingWitchVictimResultKey) {
+    pendingWitchVictimResultKey = null;
+    witchVictimResultRevealed = false;
+    document.querySelector("#witch-victim-result-screen").hidden = true;
+    document.body.classList.remove("witch-victim-result-active");
+  }
   document.querySelector("#game-progress").textContent =
     state.phase === "day"
       ? `Votes reçus : ${state.votes_received}/${state.vote_total}`
@@ -1409,7 +1591,9 @@ function renderGamePanel(response) {
   area.replaceChildren();
   const action = response.action;
   area.dataset.action = action?.kind || "waiting";
-  if (action) {
+  if (["lovers_reveal", "contamination_reveal"].includes(action?.kind)) {
+    renderLoversChoice(area, action);
+  } else if (action) {
     const form = document.createElement("form");
     form.id = "game-action-form";
     const modal = document.createElement("section");
@@ -1434,11 +1618,9 @@ function renderGamePanel(response) {
     const incomplete = [...form.querySelectorAll("select, input[data-game-required='true']")]
       .some((control) => (control.required || control.dataset.gameRequired === "true") && !control.value);
     const hasTarget = targetFields.some((field) => gameActionSelections.get(field.name));
-    const hasPotionChoice = action.kind === "witch" && (
-      gameActionSelections.get("save") === "yes"
-      || Boolean(gameActionSelections.get("kill_target"))
-    );
-    submit.disabled = incomplete || !(hasTarget || hasPotionChoice);
+    const hasWitchSaveChoice = action.kind === "witch_save"
+      && Boolean(gameActionSelections.get("save"));
+    submit.disabled = incomplete || !(hasTarget || hasWitchSaveChoice);
     const footer = document.createElement("div");
     footer.className = "game-choice-modal-footer";
     footer.append(submit);
@@ -1447,8 +1629,14 @@ function renderGamePanel(response) {
     doNothing.type = "button";
     doNothing.className = "secondary-button game-action-do-nothing";
     doNothing.dataset.gameDoNothing = "true";
-    doNothing.textContent = "Ne rien faire";
-    footer.append(doNothing);
+    doNothing.textContent = ["witch_pass", "witch_save"].includes(action.kind)
+      ? "Continuer sans agir"
+      : "Ne rien faire";
+    if (
+      action.kind !== "cupidon"
+      && !action.mandatory
+      && !(action.kind === "witch_save" && optionFields.length)
+    ) footer.append(doNothing);
 
     const status = document.createElement("p");
     status.className = "game-action-status";
@@ -1475,17 +1663,319 @@ function renderGamePanel(response) {
         : "En attente de la prochaine étape…";
     area.append(waiting);
   }
-  if (response.private_result) {
-    const privateResult = document.createElement("p");
-    privateResult.className = "private-game-result";
-    privateResult.textContent = response.private_result;
-    area.append(privateResult);
-  }
   updateGameCountdown();
 }
 
+function getPrivateGameResult(response) {
+  if (response.private_role_result) {
+    return {
+      id: response.private_role_result.id,
+      type: "role",
+      result: response.private_role_result,
+    };
+  }
+  if (response.private_contamination_result) {
+    return {
+      id: response.private_contamination_result.id,
+      type: "contamination",
+      result: response.private_contamination_result,
+    };
+  }
+  if (response.private_pair_result) {
+    return {
+      id: response.private_pair_result.id,
+      type: "pair",
+      result: response.private_pair_result,
+    };
+  }
+  if (response.private_result) {
+    return {
+      id: `notice:${response.state.round}:${response.private_result}`,
+      type: "notice",
+      result: response.private_result,
+    };
+  }
+  return null;
+}
+
+function createPrivateRopePath(svg, pathData, { foreground = false } = {}) {
+  const namespace = "http://www.w3.org/2000/svg";
+  const core = document.createElementNS(namespace, "path");
+  core.setAttribute("d", pathData);
+  core.setAttribute("fill", "none");
+  core.setAttribute("stroke", foreground ? "#51280f" : "#69340f");
+  core.setAttribute("stroke-width", foreground ? "13" : "12");
+  core.setAttribute("stroke-linecap", "round");
+  core.setAttribute("stroke-linejoin", "round");
+  core.style.filter = "drop-shadow(0 2px 2px #000b)";
+  svg.append(core);
+
+  const highlight = document.createElementNS(namespace, "path");
+  highlight.setAttribute("d", pathData);
+  highlight.setAttribute("fill", "none");
+  highlight.setAttribute("stroke", "#c88e48");
+  highlight.setAttribute("stroke-width", foreground ? "8" : "7");
+  highlight.setAttribute("stroke-linecap", "round");
+  highlight.setAttribute("stroke-linejoin", "round");
+  highlight.setAttribute("opacity", "0.72");
+  svg.append(highlight);
+
+  const length = core.getTotalLength();
+  const sampleStep = 2.5;
+  const twistPeriod = 20;
+  const twistWidth = foreground ? 2.4 : 2;
+  for (const strand of [
+    { phase: 0, color: "#f4ce7a" },
+    { phase: (Math.PI * 2) / 3, color: "#a95e24" },
+    { phase: (Math.PI * 4) / 3, color: "#d99a51" },
+  ]) {
+    let braidedPath = "";
+    for (let distance = 0; distance <= length; distance += sampleStep) {
+      const point = core.getPointAtLength(distance);
+      const before = core.getPointAtLength(Math.max(0, distance - 0.5));
+      const after = core.getPointAtLength(Math.min(length, distance + 0.5));
+      const tangentX = after.x - before.x;
+      const tangentY = after.y - before.y;
+      const tangentLength = Math.hypot(tangentX, tangentY) || 1;
+      const offset = Math.sin((distance / twistPeriod) * Math.PI * 2 + strand.phase) * 3;
+      const x = point.x - (tangentY / tangentLength) * offset;
+      const y = point.y + (tangentX / tangentLength) * offset;
+      braidedPath += `${distance === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)} `;
+    }
+    const braid = document.createElementNS(namespace, "path");
+    braid.setAttribute("d", braidedPath);
+    braid.setAttribute("fill", "none");
+    braid.setAttribute("stroke", strand.color);
+    braid.setAttribute("stroke-width", String(twistWidth));
+    braid.setAttribute("stroke-linecap", "round");
+    braid.setAttribute("stroke-linejoin", "round");
+    svg.append(braid);
+  }
+}
+
+function layoutPrivatePairRope(players, backRope, frontRope) {
+  const container = players.getBoundingClientRect();
+  const images = [...players.querySelectorAll(".private-pair-role-image")];
+  if (container.width === 0 || container.height === 0 || images.length !== 2) return;
+
+  for (const svg of [backRope, frontRope]) {
+    svg.replaceChildren();
+    svg.setAttribute("viewBox", `0 0 ${container.width} ${container.height}`);
+  }
+
+  const cards = images.map((image) => {
+    const bounds = image.getBoundingClientRect();
+    const left = bounds.left - container.left;
+    const top = bounds.top - container.top;
+    const right = bounds.right - container.left;
+    const bottom = bounds.bottom - container.top;
+    const radius = Math.min(18, bounds.width * 0.09);
+    return { left, top, right, bottom, radius, width: bounds.width, height: bounds.height };
+  });
+
+  const loopPath = ({ left, top, right, bottom, width, height }) => {
+    const sideOffset = Math.max(7, width * 0.035);
+    const topOffset = Math.max(5, height * 0.018);
+    const bottomOffset = Math.max(6, height * 0.022);
+    return [
+      `M ${left + width * 0.2} ${top - topOffset}`,
+      `C ${left + width * 0.48} ${top - topOffset - 7} ${right - width * 0.08} ${top - 2} ${right + sideOffset} ${top + height * 0.18}`,
+      `C ${right + sideOffset + 5} ${top + height * 0.43} ${right + sideOffset - 2} ${bottom - height * 0.16} ${right - width * 0.08} ${bottom + bottomOffset}`,
+      `C ${right - width * 0.34} ${bottom + bottomOffset + 8} ${left + width * 0.1} ${bottom + bottomOffset + 5} ${left - sideOffset} ${bottom - height * 0.16}`,
+      `C ${left - sideOffset - 5} ${bottom - height * 0.42} ${left - sideOffset + 2} ${top + height * 0.16} ${left + width * 0.2} ${top - topOffset}`,
+    ].join(" ");
+  };
+  cards.forEach((card) => createPrivateRopePath(backRope, loopPath(card)));
+
+  const [upper, lower] = cards;
+  const upperCenterX = (upper.left + upper.right) / 2;
+  const lowerCenterX = (lower.left + lower.right) / 2;
+  const knotX = (upperCenterX + lowerCenterX) / 2;
+  const upperAnchorY = upper.bottom + 2;
+  const lowerAnchorY = lower.top - 2;
+  const knotY = (upperAnchorY + lowerAnchorY) / 2;
+  const braidOffset = Math.min(18, upper.width * 0.08);
+  const knotWidth = Math.min(42, upper.width * 0.18);
+  const knotHeight = Math.min(34, Math.max(24, (lower.top - upper.bottom) * 0.34));
+  const connectorPaths = [
+    [
+      `M ${upperCenterX - braidOffset} ${upperAnchorY}`,
+      `C ${upperCenterX - braidOffset - 12} ${upperAnchorY + 12} ${knotX - knotWidth} ${knotY - knotHeight} ${knotX + knotWidth * 0.72} ${knotY - knotHeight * 0.18}`,
+      `C ${knotX + knotWidth} ${knotY + knotHeight * 0.5} ${knotX - knotWidth * 0.68} ${knotY + knotHeight * 0.72} ${knotX - knotWidth * 0.82} ${knotY + knotHeight * 0.12}`,
+      `C ${knotX - knotWidth * 0.94} ${knotY - knotHeight * 0.54} ${knotX + knotWidth * 0.6} ${knotY - knotHeight * 0.56} ${knotX + knotWidth * 0.9} ${knotY + knotHeight * 0.18}`,
+      `C ${knotX + knotWidth * 0.58} ${knotY + knotHeight * 0.72} ${knotX - knotWidth * 0.12} ${knotY + knotHeight} ${knotX - knotWidth * 0.1} ${knotY + knotHeight * 0.62}`,
+      `C ${knotX - knotWidth * 0.08} ${knotY + knotHeight * 0.2} ${knotX + 5} ${lowerAnchorY - 16} ${lowerCenterX + braidOffset} ${lowerAnchorY}`,
+    ].join(" "),
+    [
+      `M ${upperCenterX + braidOffset} ${upperAnchorY}`,
+      `C ${upperCenterX + braidOffset + 12} ${upperAnchorY + 12} ${knotX + knotWidth} ${knotY - knotHeight} ${knotX - knotWidth * 0.72} ${knotY - knotHeight * 0.18}`,
+      `C ${knotX - knotWidth} ${knotY + knotHeight * 0.5} ${knotX + knotWidth * 0.68} ${knotY + knotHeight * 0.72} ${knotX + knotWidth * 0.82} ${knotY + knotHeight * 0.12}`,
+      `C ${knotX + knotWidth * 0.94} ${knotY - knotHeight * 0.54} ${knotX - knotWidth * 0.6} ${knotY - knotHeight * 0.56} ${knotX - knotWidth * 0.9} ${knotY + knotHeight * 0.18}`,
+      `C ${knotX - knotWidth * 0.58} ${knotY + knotHeight * 0.72} ${knotX + knotWidth * 0.12} ${knotY + knotHeight} ${knotX + knotWidth * 0.1} ${knotY + knotHeight * 0.62}`,
+      `C ${knotX + knotWidth * 0.08} ${knotY + knotHeight * 0.2} ${knotX - 5} ${lowerAnchorY - 16} ${lowerCenterX - braidOffset} ${lowerAnchorY}`,
+    ].join(" "),
+  ];
+  connectorPaths.forEach((pathData) => createPrivateRopePath(backRope, pathData));
+  createPrivateRopePath(
+    frontRope,
+    `M ${knotX - knotWidth * 0.78} ${knotY - knotHeight * 0.08} C ${knotX - 8} ${knotY - knotHeight * 0.62} ${knotX + 8} ${knotY + knotHeight * 0.62} ${knotX + knotWidth * 0.78} ${knotY + knotHeight * 0.08}`,
+    { foreground: true },
+  );
+
+  const wrapCard = ({ left, top, right, bottom, width, height }, index) => {
+    const insetX = width * 0.16;
+    const insetY = height * 0.2;
+    return [
+      `M ${left + insetX} ${top - 3}`,
+      `C ${left - 7} ${top + height * 0.12} ${left - 8} ${top + height * 0.36} ${left + width * 0.04} ${top + height * 0.5}`,
+      `C ${left + width * 0.12} ${bottom + 10} ${right - width * 0.18} ${bottom + 10} ${right - width * 0.05} ${bottom - height * 0.04}`,
+      `C ${right + 8} ${bottom - height * 0.2} ${right + 7} ${top + height * 0.34} ${right - width * 0.04} ${top + height * 0.14}`,
+      `C ${right - width * 0.18} ${top - 8} ${left + width * 0.38} ${top - 8} ${left + insetX} ${top - 3}`,
+    ].join(" ");
+  };
+  [upper, lower].forEach((card, index) => {
+    createPrivateRopePath(frontRope, wrapCard(card, index), { foreground: true });
+  });
+
+  const tieEnds = [
+    `M ${upperCenterX - upper.width * 0.28} ${upper.bottom - 2} Q ${upperCenterX} ${upper.bottom + 8} ${upperCenterX} ${upperAnchorY}`,
+    `M ${lowerCenterX} ${lowerAnchorY} Q ${lowerCenterX} ${lower.top - 10} ${lowerCenterX + lower.width * 0.28} ${lower.top + 2}`,
+  ];
+  tieEnds.forEach((pathData) => {
+    createPrivateRopePath(frontRope, pathData, { foreground: true });
+  });
+}
+
+function renderPrivateGameResult(privateResult) {
+  if (privatePairRopeObserver) {
+    privatePairRopeObserver.disconnect();
+    privatePairRopeObserver = null;
+  }
+  const screen = document.querySelector("#private-game-result-screen");
+  const kicker = document.querySelector("#private-game-result-kicker");
+  const title = document.querySelector("#private-game-result-title");
+  const content = document.querySelector("#private-game-result-content");
+  const revealButton = document.querySelector("#private-game-result-reveal");
+  const continueButton = document.querySelector("#private-game-result-continue");
+  let pairRopes = null;
+  content.replaceChildren();
+  revealButton.hidden = true;
+  continueButton.hidden = false;
+  if (privateResult.type === "role" || privateResult.type === "contamination") {
+    kicker.textContent = privateResult.type === "role"
+      ? "RÉSULTAT DE LA VOYANTE"
+      : "RÉSULTAT DE LA CONTAMINATION";
+    title.textContent = privateResult.result.player_name;
+    const image = document.createElement("img");
+    image.className = privateResult.type === "role" ? "private-seer-role-image" : "";
+    image.src = privateResult.result.role.image;
+    image.alt = `Carte ${privateResult.result.role.name}`;
+    content.append(image);
+    if (privateResult.type === "contamination") {
+      const roleName = document.createElement("h3");
+      roleName.textContent = privateResult.result.role.name;
+      content.append(roleName);
+    }
+  } else if (privateResult.type === "pair") {
+    kicker.textContent = "LIEN SECRET DE CUPIDON";
+    const handoff = activeRoomView?.mode === "local"
+      && currentGameResponse?.action?.kind === "lovers_reveal";
+    revealButton.hidden = !handoff || privateGameResultRevealed;
+    continueButton.hidden = handoff && !privateGameResultRevealed;
+    if (handoff && !privateGameResultRevealed) {
+      const actorIndex = currentGameResponse.action.actor_index;
+      const actorName = activeRoomView.players[actorIndex]?.name || "le joueur concerné";
+      title.textContent = `Passe l’appareil à ${actorName}`;
+      const instruction = document.createElement("p");
+      instruction.textContent = "Appuie sur le bouton lorsque tu es prêt à consulter tes informations en privé.";
+      content.append(instruction);
+    } else {
+      title.textContent = "Vos destins sont liés";
+      revealButton.hidden = true;
+      continueButton.hidden = false;
+      const players = document.createElement("div");
+      players.className = "private-pair-players";
+      privateResult.result.players.forEach((player, index) => {
+        const card = document.createElement("div");
+        card.className = `private-pair-player private-pair-player--${index === 0 ? "upper" : "lower"}`;
+        const identity = document.createElement("div");
+        identity.className = "private-pair-identity";
+        const name = document.createElement("strong");
+        name.textContent = player.name;
+        identity.append(name);
+        const image = document.createElement("img");
+        image.className = "private-pair-role-image";
+        image.src = player.role.image;
+        image.alt = `Carte ${player.role.name}`;
+        card.append(...(index === 0 ? [identity, image] : [image, identity]));
+        players.append(card);
+      });
+      const loveLink = document.createElement("div");
+      loveLink.className = "private-pair-love-link";
+      loveLink.setAttribute("aria-label", "Cupidon a lié ces deux joueurs : ils sont amoureux");
+      loveLink.innerHTML = '<span aria-hidden="true">♥</span><strong>Amoureux</strong>';
+      players.append(loveLink);
+      content.append(players);
+      pairRopes = { players };
+    }
+  } else {
+    revealButton.hidden = true;
+    continueButton.hidden = false;
+    kicker.textContent = "CONSULTATION PRIVÉE";
+    title.textContent = "Vous êtes sauvé";
+    const message = document.createElement("p");
+    message.className = "private-notice-result";
+    message.textContent = privateResult.result;
+    content.append(message);
+  }
+  screen.hidden = false;
+  document.body.classList.add("private-game-result-active");
+  if (pairRopes) privatePairRopeObserver = null;
+}
+
+function renderWitchVictimResult(action) {
+  const screen = document.querySelector("#witch-victim-result-screen");
+  const kicker = document.querySelector("#witch-victim-result-kicker");
+  const title = document.querySelector("#witch-victim-result-title");
+  const content = document.querySelector("#witch-victim-result-content");
+  const revealButton = document.querySelector("#witch-victim-result-reveal");
+  const continueButton = document.querySelector("#witch-victim-result-continue");
+  const handoff = activeRoomView?.mode === "local" && !witchVictimResultRevealed;
+  content.replaceChildren();
+  kicker.textContent = "CONSULTATION PRIVÉE DE LA SORCIÈRE";
+  revealButton.hidden = !handoff;
+  continueButton.hidden = handoff;
+
+  if (handoff) {
+    const actorName = activeRoomView.players[action.actor_index]?.name || "la Sorcière";
+    title.textContent = `Passe l’appareil à ${actorName}`;
+    const instruction = document.createElement("p");
+    instruction.textContent = "Appuie sur le bouton lorsque tu es prêt à consulter le résultat en privé.";
+    content.append(instruction);
+  } else if (action.victim) {
+    title.textContent = "Victime de la meute";
+    const player = document.createElement("div");
+    player.className = "witch-victim-result-player";
+    const initial = document.createElement("span");
+    initial.className = "witch-victim-result-initial";
+    initial.textContent = action.victim.initial;
+    const name = document.createElement("strong");
+    name.textContent = action.victim.name;
+    player.append(initial, name);
+    content.append(player);
+  } else {
+    title.textContent = "La meute n’a choisi personne";
+    const message = document.createElement("p");
+    message.textContent = "Aucune victime n’a été désignée cette nuit.";
+    content.append(message);
+  }
+
+  screen.hidden = false;
+  document.body.classList.add("witch-victim-result-active");
+}
+
 async function refreshGamePanel() {
-  if (!activeRoom || !activeRoomView?.started || !activeRoomView.game) return;
+  if (pendingPrivateGameResult || !activeRoom || !activeRoomView?.started || !activeRoomView.game) return;
   try {
     if (activeRoomView.mode === "local") {
       const roomResponse = await fetch(`/api/rooms/${encodeURIComponent(activeRoom)}`);
@@ -1519,6 +2009,24 @@ async function refreshGamePanel() {
     lobbyStatus.textContent = error.message;
   }
 }
+
+document.querySelector("#game-action-area").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-private-reveal]");
+  if (!button || !activeRoom || !currentGameResponse?.action) return;
+  button.disabled = true;
+  try {
+    const actorIndex = Number(button.dataset.privateReveal);
+    const result = await postJson(
+      `/api/rooms/${encodeURIComponent(activeRoom)}/game/action`,
+      { do_nothing: true, player_index: actorIndex },
+    );
+    allowPrivateLoversResult = true;
+    renderGamePanel(result);
+  } catch (error) {
+    button.disabled = false;
+    lobbyStatus.textContent = error.message;
+  }
+});
 
 document.querySelector("#game-action-area").addEventListener("submit", async (event) => {
   if (event.target.id !== "game-action-form" || !activeRoom) return;
@@ -1557,7 +2065,18 @@ document.querySelector("#game-action-area").addEventListener("submit", async (ev
   const submit = event.target.querySelector('button[type="submit"]');
   submit.disabled = true;
   try {
-    await postJson(`/api/rooms/${encodeURIComponent(activeRoom)}/game/action`, payload);
+    const result = await postJson(`/api/rooms/${encodeURIComponent(activeRoom)}/game/action`, payload);
+    const privateResult = getPrivateGameResult(result);
+    if (privateResult && !seenPrivateGameResults.has(privateResult.id)) {
+      if (activeRoomView.mode === "local") {
+        const response = await fetch(`/api/rooms/${encodeURIComponent(activeRoom)}`);
+        const room = await response.json();
+        if (!response.ok) throw new Error(room.error || "Impossible de retrouver la partie.");
+        activeRoomView = room;
+      }
+      renderGamePanel(result);
+      return;
+    }
     if (activeRoomView.mode === "local") {
       const response = await fetch(`/api/rooms/${encodeURIComponent(activeRoom)}`);
       const room = await response.json();
@@ -1857,6 +2376,7 @@ document.querySelector("#deal-card-back").addEventListener("click", revealLocalR
 document.querySelector("#deal-acknowledge").addEventListener("click", () => {
   if (selectedLocalPlayer !== null) revealedLocalPlayers.add(selectedLocalPlayer);
   selectedLocalPlayer = null;
+  persistGameSession();
   document.body.classList.remove("role-reveal-active");
   document.querySelector("#deal-status").textContent = "";
   renderLocalRoleBoard();
@@ -1873,6 +2393,7 @@ document.querySelector("#local-game-start").addEventListener("click", async () =
     );
     localGameStarted = true;
     activeRoomView = room;
+    persistGameSession();
     renderRoom(room);
       showChiefDraw(room);
   } catch (error) {
@@ -1885,12 +2406,112 @@ document.querySelector("#local-game-start").addEventListener("click", async () =
 document.querySelector("#chief-draw-continue").addEventListener("click", () => {
   document.querySelector("#chief-draw-screen").hidden = true;
   document.body.classList.remove("chief-draw-active");
+  chiefDrawAcknowledged = true;
+  persistGameSession();
+  if (activeRoomView?.mode === "local" || activeRoomView?.viewer_is_chief) {
+    showChiefInstructions();
+  } else {
+    chiefInstructionsAcknowledged = true;
+    if (activeRoomView) initializeRoleReveal(activeRoomView);
+  }
+});
+
+document.querySelector("#chief-instructions-continue").addEventListener("click", () => {
+  chiefInstructionsAcknowledged = true;
+  persistGameSession();
+  document.querySelector("#chief-instructions-screen").hidden = true;
+  document.body.classList.remove("chief-instructions-active");
   if (activeRoomView) initializeRoleReveal(activeRoomView);
+});
+
+document.querySelector("#private-game-result-reveal").addEventListener("click", () => {
+  if (pendingPrivateGameResult?.type !== "pair") return;
+  privateGameResultRevealed = true;
+  persistGameSession();
+  renderPrivateGameResult(pendingPrivateGameResult);
+});
+
+document.querySelector("#private-game-result-continue").addEventListener("click", async () => {
+  if (!pendingPrivateGameResult) return;
+  const action = currentGameResponse?.action;
+  if (
+    pendingPrivateGameResult.type === "pair"
+    && action?.kind === "lovers_reveal"
+  ) {
+    const payload = { do_nothing: true };
+    if (activeRoomView?.mode === "local") {
+      payload.player_index = action.actor_index;
+    }
+    try {
+      const response = await fetch(
+        `/api/rooms/${encodeURIComponent(activeRoom)}/game/action`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      const result = await response.json();
+      if (response.status === 409) {
+        const query = activeRoomView?.mode === "local"
+          ? `?player_index=${action.actor_index}`
+          : "";
+        const latestResponse = await fetch(
+          `/api/rooms/${encodeURIComponent(activeRoom)}/game${query}`,
+        );
+        const latest = await latestResponse.json();
+        if (!latestResponse.ok) {
+          throw new Error(latest.error || "Impossible de vérifier la consultation privée.");
+        }
+        if (
+          latest.action?.kind === "lovers_reveal"
+          && latest.action.actor_index === action.actor_index
+        ) {
+          throw new Error(result.error || "Impossible de terminer la consultation privée.");
+        }
+      } else if (!response.ok) {
+        throw new Error(result.error || "Impossible de terminer la consultation privée.");
+      }
+    } catch (error) {
+      lobbyStatus.textContent = error.message;
+      return;
+    }
+  }
+  seenPrivateGameResults.add(pendingPrivateGameResult.id);
+  pendingPrivateGameResult = null;
+  privateGameResultRevealed = false;
+  persistGameSession();
+  if (privatePairRopeObserver) {
+    privatePairRopeObserver.disconnect();
+    privatePairRopeObserver = null;
+  }
+  document.querySelector("#private-game-result-screen").hidden = true;
+  document.body.classList.remove("private-game-result-active");
+  await refreshGamePanel();
+});
+
+document.querySelector("#witch-victim-result-reveal").addEventListener("click", () => {
+  if (!currentGameResponse?.action || !pendingWitchVictimResultKey) return;
+  witchVictimResultRevealed = true;
+  persistGameSession();
+  renderWitchVictimResult(currentGameResponse.action);
+});
+
+document.querySelector("#witch-victim-result-continue").addEventListener("click", () => {
+  if (!pendingWitchVictimResultKey || !currentGameResponse) return;
+  seenWitchVictimResults.add(pendingWitchVictimResultKey);
+  pendingWitchVictimResultKey = null;
+  witchVictimResultRevealed = false;
+  persistGameSession();
+  document.querySelector("#witch-victim-result-screen").hidden = true;
+  document.body.classList.remove("witch-victim-result-active");
+  renderGamePanel(currentGameResponse);
 });
 
 document.querySelector("#game-instruction-continue").addEventListener("click", () => {
   if (!currentInstructionKey) return;
   acknowledgedInstructionKey = currentInstructionKey;
+  persistGameSession();
   if (instructionSpeechFallback) window.clearTimeout(instructionSpeechFallback);
   instructionSpeechFallback = null;
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
@@ -1898,6 +2519,9 @@ document.querySelector("#game-instruction-continue").addEventListener("click", (
   document.querySelector("#game-instruction-continue").hidden = true;
   document.body.classList.remove("game-instruction-active");
   document.body.classList.add("game-action-active");
+  if (currentGameResponse?.action?.kind === "witch_save") {
+    renderGamePanel(currentGameResponse);
+  }
 });
 
 document.querySelector("#next-player-form").addEventListener("submit", async (event) => {
@@ -1964,6 +2588,7 @@ exitConfirmation.addEventListener("close", () => backButton.focus());
 async function returnToModeSelection() {
   resetGameBackPress();
   gameBackHistoryActive = false;
+  clearPersistedGameSession();
   const destination = activeRoomView?.mode === "local"
     ? "/local"
     : activeRoomView?.mode === "online"
@@ -2016,3 +2641,46 @@ backButton.addEventListener("click", async () => {
   }
   await returnToModeSelection();
 });
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !activeRoomView?.started || exitConfirmation.open) return;
+  event.preventDefault();
+  exitConfirmation.showModal();
+  document.querySelector("#stay-in-game").focus();
+});
+
+async function restoreSavedRoom() {
+  const storedRoom = readStoredJson(activeRoomStorageKey);
+  const currentMode = document.querySelector("main").dataset.startMode;
+  if (!storedRoom?.code || storedRoom.mode !== currentMode) return;
+
+  try {
+    const response = await fetch(`/api/rooms/${encodeURIComponent(storedRoom.code)}`);
+    const room = await response.json();
+    if (!response.ok) throw new Error(room.error || "Salon introuvable.");
+    showLobby(room);
+    const storedUi = readStoredJson(gameUiStorageKey) || {};
+    privateGameResultRevealed = storedUi.privateGameResultRevealed === true;
+    witchVictimResultRevealed = storedUi.witchVictimResultRevealed === true;
+    acknowledgedInstructionKey = storedUi.acknowledgedInstructionKey || null;
+    chiefDrawShown = storedUi.chiefDrawShown === true;
+    chiefDrawAcknowledged = storedUi.chiefDrawAcknowledged === true;
+    chiefInstructionsAcknowledged = storedUi.chiefInstructionsAcknowledged === true;
+    localGameStarted = storedUi.localGameStarted === true;
+    selectedLocalPlayer = Number.isInteger(storedUi.selectedLocalPlayer)
+      ? storedUi.selectedLocalPlayer
+      : null;
+    revealedLocalPlayers.clear();
+    (room.local_role_viewed_indices || []).forEach((index) => revealedLocalPlayers.add(index));
+    (storedUi.revealedLocalPlayers || []).forEach((index) => revealedLocalPlayers.add(index));
+    if (room.started) {
+      localGameStarted = room.mode === "local"
+        && (localGameStarted || room.game?.phase !== "dealing");
+      initializeRoleReveal(room);
+    }
+  } catch {
+    clearPersistedGameSession();
+  }
+}
+
+void restoreSavedRoom();
